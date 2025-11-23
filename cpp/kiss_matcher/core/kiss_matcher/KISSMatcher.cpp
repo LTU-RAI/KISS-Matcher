@@ -9,7 +9,10 @@
 #include <kiss_matcher/KISSMatcher.hpp>
 
 namespace kiss_matcher {
-KISSMatcher::KISSMatcher(const float &voxel_size) { config_ = KISSMatcherConfig(voxel_size); }
+KISSMatcher::KISSMatcher(const float &voxel_size) {
+  config_ = KISSMatcherConfig(voxel_size);
+  reset();
+}
 
 KISSMatcher::KISSMatcher(const KISSMatcherConfig &config) {
   config_ = config;
