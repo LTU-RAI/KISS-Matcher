@@ -522,7 +522,14 @@ void PoseGraphManager::visualizeLoopClosureClouds() {
     return;
   }
 
-  const auto &query_timestamp = toRclcppTime(keyframes_[succeeded_query_idx_].timestamp_);
+  rclcpp::Time query_timestamp;
+  {
+    std::lock_guard<std::mutex> lock(keyframes_mutex_);
+    if (succeeded_query_idx_ >= keyframes_.size()) {
+      return;
+    }
+    query_timestamp = toRclcppTime(keyframes_[succeeded_query_idx_].timestamp_);
+  }
 
   debug_src_pub_->publish(toROSMsg(loop_closure_->getSourceCloud(), map_frame_, query_timestamp));
   debug_tgt_pub_->publish(toROSMsg(loop_closure_->getTargetCloud(), map_frame_, query_timestamp));
