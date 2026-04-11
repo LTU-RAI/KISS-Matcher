@@ -52,14 +52,20 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   save_map_pcd_         = declare_parameter<bool>("result.save_map_pcd", false);
   save_in_kitti_format_ = declare_parameter<bool>("result.save_in_kitti_format", false);
   seq_name_             = declare_parameter<std::string>("result.seq_name", "");
+  package_path_         = declare_parameter<std::string>("result.save_dir", "");
+  if (package_path_.empty()) {
+    package_path_ = fs::current_path().string();
+  }
+  if (!fs::exists(package_path_)) {
+    fs::create_directories(package_path_);
+  }
+  RCLCPP_INFO(this->get_logger(), "Save directory: %s", package_path_.c_str());
 
   rclcpp::QoS qos(1);
   qos.durability(RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL);
   qos.reliability(RMW_QOS_POLICY_RELIABILITY_RELIABLE);
 
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-
-  package_path_ = "";
 
   loop_closure_          = std::make_shared<LoopClosure>(lc_config, this->get_logger());
   loop_detection_radius_ = lc_config.loop_detection_radius_;
