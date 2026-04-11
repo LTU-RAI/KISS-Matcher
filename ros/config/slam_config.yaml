@@ -18,12 +18,12 @@
     save_voxel_resolution: 0.1       # Resolution used when saving voxelized map
 
     keyframe:
-      keyframe_threshold: 1.0        # ⭐ [Unit: m] Distance threshold to add a new keyframe
+      keyframe_threshold: 0.25        # ⭐ [Unit: m] Distance threshold to add a new keyframe
       # NOTE(hlim): Once `num_submap_keyframes` is larger than 1,
       # Submap-to-submap registration is performed.
       # The main advantage of KISS-Matcher is its super-fast speed in submap matching!
       # see: https://arxiv.org/pdf/2409.15615
-      num_submap_keyframes: 10        # ⭐ > 0. Number of keyframes per submap. It should be an odd number
+      num_submap_keyframes: 20        # ⭐ > 0. Number of keyframes per submap. It should be an odd number
 
     loop:
       verbose: true                  # Enable verbose output
