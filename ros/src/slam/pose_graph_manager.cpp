@@ -102,7 +102,7 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
       std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>>(this, "/cloud");
 
   sub_node_ = std::make_shared<message_filters::Synchronizer<NodeSyncPolicy>>(
-      NodeSyncPolicy(10), *sub_odom_, *sub_scan_);
+      NodeSyncPolicy(100), *sub_odom_, *sub_scan_);
   sub_node_->registerCallback(std::bind(
       &PoseGraphManager::callbackNode, this, std::placeholders::_1, std::placeholders::_2));
 
@@ -532,7 +532,7 @@ visualization_msgs::msg::Marker PoseGraphManager::visualizeLoopMarkers(
     const gtsam::Values &corrected_poses) const {
   visualization_msgs::msg::Marker edges;
   edges.type               = visualization_msgs::msg::Marker::LINE_LIST;
-  edges.scale.x            = 0.12f;
+  edges.scale.x            = 0.5f;
   edges.header.frame_id    = map_frame_;
   edges.pose.orientation.w = 1.0f;
   edges.color.r            = 1.0f;
