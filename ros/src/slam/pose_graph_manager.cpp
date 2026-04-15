@@ -48,6 +48,45 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   lc_config.num_inliers_threshold_ =
       declare_parameter<int>("global_reg.num_inliers_threshold", 100);
 
+  reloc_enabled_ = declare_parameter<bool>("relocalization.enabled", false);
+  prior_map_pcd_path_ = declare_parameter<std::string>("relocalization.prior_map_pcd", "");
+  reloc_num_submap_scans_ =
+      static_cast<size_t>(declare_parameter<int>("relocalization.num_submap_scans", 5));
+  reloc_voxel_res_ = declare_parameter<double>("relocalization.voxel_resolution", 0.5);
+  reloc_submap_scan_dist_ =
+      declare_parameter<double>("relocalization.submap_scan_distance", 0.5);
+
+  if (reloc_enabled_) {
+    if (prior_map_pcd_path_.empty() || !fs::exists(prior_map_pcd_path_)) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "Relocalization enabled but prior_map_pcd is missing: '%s'. Disabling.",
+                   prior_map_pcd_path_.c_str());
+      reloc_enabled_ = false;
+    } else {
+      prior_map_cloud_.reset(new pcl::PointCloud<PointType>());
+      if (pcl::io::loadPCDFile<PointType>(prior_map_pcd_path_, *prior_map_cloud_) != 0) {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Failed to load prior map PCD: %s. Disabling relocalization.",
+                     prior_map_pcd_path_.c_str());
+        reloc_enabled_   = false;
+        prior_map_cloud_ = nullptr;
+      } else {
+        // Pre-voxelize to the relocalization resolution to bound memory and
+        // give performRelocalization a tgt cloud already at the matching
+        // density. The dedicated reloc matcher is configured with the same
+        // `reloc_voxel_res_` so FPFH/solver radii are consistent.
+        const auto &voxelized = voxelize(prior_map_cloud_, reloc_voxel_res_);
+        *prior_map_cloud_     = *voxelized;
+        RCLCPP_INFO(this->get_logger(),
+                    "Relocalization enabled. Loaded prior map '%s' with %lu points "
+                    "(voxelized at %.2fm).",
+                    prior_map_pcd_path_.c_str(),
+                    prior_map_cloud_->size(),
+                    reloc_voxel_res_);
+      }
+    }
+  }
+
   save_map_bag_         = declare_parameter<bool>("result.save_map_bag", false);
   save_map_pcd_         = declare_parameter<bool>("result.save_map_pcd", false);
   save_in_kitti_format_ = declare_parameter<bool>("result.save_in_kitti_format", false);
@@ -68,6 +107,9 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
   loop_closure_          = std::make_shared<LoopClosure>(lc_config, this->get_logger());
+  if (reloc_enabled_) {
+    loop_closure_->setupRelocMatcher(reloc_voxel_res_);
+  }
   loop_detection_radius_ = lc_config.loop_detection_radius_;
 
   loop_detector_ = std::make_shared<LoopDetector>(ld_config, this->get_logger());
@@ -102,6 +144,12 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   debug_fine_aligned_pub_ =
       this->create_publisher<sensor_msgs::msg::PointCloud2>("lc/fine_alignment", qos);
   debug_cloud_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("lc/debug_cloud", qos);
+  prior_map_pub_   = this->create_publisher<sensor_msgs::msg::PointCloud2>("prior_map", qos);
+
+  if (reloc_enabled_ && prior_map_cloud_ && !prior_map_cloud_->empty()) {
+    // TRANSIENT_LOCAL QoS latches this for late subscribers (e.g. RViz).
+    prior_map_pub_->publish(toROSMsg(*prior_map_cloud_, map_frame_, this->now()));
+  }
 
   sub_odom_ = std::make_shared<message_filters::Subscriber<nav_msgs::msg::Odometry>>(this, "/odom");
   sub_scan_ =
@@ -197,6 +245,24 @@ void PoseGraphManager::callbackNode(const nav_msgs::msg::Odometry::ConstSharedPt
 
   kiss_matcher::TicToc total_timer;
   kiss_matcher::TicToc local_timer;
+
+  // Relocalization: accumulate scans from the front-end until enough are
+  // available to attempt a global alignment to the prior map. Once successful,
+  // rewrite every incoming pose into the prior-map frame so the rest of the
+  // pipeline (pose graph, TF, saving) operates there transparently.
+  if (reloc_enabled_ && !reloc_succeeded_) {
+    if (!tryRelocalize()) {
+      return;
+    }
+    current_frame_.pose_           = T_priormap_from_newodom_ * current_frame_.pose_;
+    current_frame_.pose_corrected_ = current_frame_.pose_;
+    current_odom                   = current_frame_.pose_;
+    last_corrected_pose_           = current_frame_.pose_;
+    odom_delta_                    = Eigen::Matrix4d::Identity();
+  } else if (reloc_enabled_ && reloc_succeeded_) {
+    current_frame_.pose_           = T_priormap_from_newodom_ * current_frame_.pose_;
+    current_frame_.pose_corrected_ = current_frame_.pose_;
+  }
 
   visualizeCurrentData(current_odom, odom_msg->header.stamp, scan_msg->header.frame_id);
 
@@ -671,6 +737,68 @@ void PoseGraphManager::saveFlagCallback(const std_msgs::msg::String::ConstShared
                                          *voxelized_map);
     RCLCPP_INFO(this->get_logger(), "Accumulated map cloud saved in .pcd format");
   }
+}
+
+bool PoseGraphManager::tryRelocalize() {
+  // Only add a scan to the submap once the robot has moved at least
+  // `reloc_submap_scan_dist_` from the last accumulated pose — this spreads
+  // the submap out geometrically instead of stacking near-duplicate scans
+  // while the robot is stationary or moving slowly.
+  const Eigen::Vector3d current_pos = current_frame_.pose_.block<3, 1>(0, 3);
+  const bool should_accumulate =
+      !reloc_has_last_accum_pose_ ||
+      (current_pos - reloc_last_accum_pose_.block<3, 1>(0, 3)).norm() >= reloc_submap_scan_dist_;
+
+  if (!should_accumulate) {
+    return false;
+  }
+
+  // Scans are stored in the lidar frame; stitch into the current-session odom
+  // frame using the front-end pose before running global registration against
+  // the prior map.
+  reloc_submap_accum_ += transformPcd(current_frame_.scan_, current_frame_.pose_);
+  ++reloc_num_accumulated_;
+  reloc_last_accum_pose_     = current_frame_.pose_;
+  reloc_has_last_accum_pose_ = true;
+
+  if (reloc_num_accumulated_ < reloc_num_submap_scans_) {
+    RCLCPP_INFO_THROTTLE(this->get_logger(),
+                         *this->get_clock(),
+                         1000,
+                         "Relocalizing: accumulating scans (%lu / %lu)...",
+                         reloc_num_accumulated_,
+                         reloc_num_submap_scans_);
+    return false;
+  }
+
+  RCLCPP_INFO(this->get_logger(),
+              "Relocalizing: running KISS-Matcher against prior map (%lu pts) with submap (%lu pts)...",
+              prior_map_cloud_->size(),
+              reloc_submap_accum_.size());
+
+  const auto reg = loop_closure_->performRelocalization(reloc_submap_accum_, *prior_map_cloud_);
+
+  reloc_submap_accum_.clear();
+  reloc_num_accumulated_     = 0;
+  reloc_has_last_accum_pose_ = false;
+
+  if (!reg.is_valid_) {
+    RCLCPP_WARN(this->get_logger(),
+                "Relocalization attempt failed (inliers=%lu, overlap=%.1f%%). Retrying...",
+                reg.num_final_inliers_,
+                reg.overlapness_);
+    return false;
+  }
+
+  T_priormap_from_newodom_ = reg.pose_;
+  reloc_succeeded_         = true;
+
+  RCLCPP_INFO(this->get_logger(),
+              "\033[1;32mRelocalization succeeded (inliers=%lu, overlap=%.1f%%). "
+              "Pose graph will run in the prior-map frame.\033[0m",
+              reg.num_final_inliers_,
+              reg.overlapness_);
+  return true;
 }
 
 // ----------------------------------------------------------------------

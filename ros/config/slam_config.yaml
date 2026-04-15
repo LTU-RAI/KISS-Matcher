@@ -18,7 +18,7 @@
     save_voxel_resolution: 0.1       # Resolution used when saving voxelized map
 
     keyframe:
-      keyframe_threshold: 0.25        # ⭐ [Unit: m] Distance threshold to add a new keyframe
+      keyframe_threshold: 1.00        # ⭐ [Unit: m] Distance threshold to add a new keyframe
       # NOTE(hlim): Once `num_submap_keyframes` is larger than 1,
       # Submap-to-submap registration is performed.
       # The main advantage of KISS-Matcher is its super-fast speed in submap matching!
@@ -41,7 +41,7 @@
       max_num_iter: 32                # Maximum iterations for local registration
       # NOTE(hlim): `scale_factor_for_corr_dist` * `voxel_resolution` is set to
       # distance threshold for ICP-variants (i.e., it is a factor relative to voxel resolution)
-      scale_factor_for_corr_dist: 10.0 #5.0 # ⭐ Scale for correspondence search distance
+      scale_factor_for_corr_dist: 5.0 #5.0 # ⭐ Scale for correspondence search distance
       # NOTE(hlim): The best value of `overlap_threshold` highly depends on `num_submap_keyframes`
       # Thus, heuristic tuning is required for the best performance.
       # Larger values make it more conservative (i.e., higher `overlap_threshold` enhances LC precision)
@@ -58,12 +58,19 @@
       # Larger values make it more conservative (i.e., higher `num_inliers_threshold` enhances LC precision)
       num_inliers_threshold: 32 #50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
+    relocalization:
+      enabled: true                    # If true, localize into a previously saved map at startup
+      prior_map_pcd: "/home/niksta/ros2_ws/src/KISS-Matcher/ros/data/campus_winter/result.pcd"                 # Absolute path to the prior accumulated map PCD
+      num_submap_scans: 10               # Number of incoming scans to accumulate before each match attempt
+      submap_scan_distance: 1.0         # [Unit: m] Minimum base-frame motion before accepting the next scan into the submap
+      voxel_resolution: 1.0             # Voxel resolution for relocalization submap/target downsampling
+
     result:
       save_map_pcd: true
       save_map_bag: false                 # not implemented yet
       save_in_kitti_format: true
       seq_name: "campus_winter"
-      save_dir: "/home/niksta/Downloads/"                        # Absolute directory for saved results.
+      save_dir: "/home/niksta/ros2_ws/src/KISS-Matcher/ros/data/campus_winter/"                        # Absolute directory for saved results.
                                           # If empty, falls back to the process's current working directory.
                                           # Used by the shutdown save path and as the default for the
                                           # `save_dir` topic trigger.

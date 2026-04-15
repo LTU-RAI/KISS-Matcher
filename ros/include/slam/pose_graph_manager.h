@@ -102,6 +102,12 @@ class PoseGraphManager : public rclcpp::Node {
 
   void saveFlagCallback(const std_msgs::msg::String::ConstSharedPtr &msg);
 
+  // Returns true if relocalization has just succeeded on this tick (caller can
+  // proceed with normal pose-graph initialization). Returns false if more
+  // scans are still being accumulated or if the current attempt failed — in
+  // either case the caller should skip the rest of the tick.
+  bool tryRelocalize();
+
   std::string map_frame_;
   std::string base_frame_;
   std::string package_path_;
@@ -156,6 +162,20 @@ class PoseGraphManager : public rclcpp::Node {
   bool save_in_kitti_format_ = false;
   double last_lc_time_       = 0.0;
 
+  // Relocalization state
+  bool reloc_enabled_             = false;
+  bool reloc_succeeded_           = false;
+  std::string prior_map_pcd_path_;
+  size_t reloc_num_submap_scans_  = 5;
+  size_t reloc_num_accumulated_   = 0;
+  double reloc_voxel_res_         = 0.5;
+  double reloc_submap_scan_dist_  = 0.5;
+  Eigen::Matrix4d reloc_last_accum_pose_ = Eigen::Matrix4d::Identity();
+  bool reloc_has_last_accum_pose_        = false;
+  pcl::PointCloud<PointType>::Ptr prior_map_cloud_;
+  pcl::PointCloud<PointType> reloc_submap_accum_;
+  Eigen::Matrix4d T_priormap_from_newodom_ = Eigen::Matrix4d::Identity();
+
   std::shared_ptr<kiss_matcher::LoopClosure> loop_closure_;
 
   // NOTE(hlim): We do not provide a loop detector implementation directly,
@@ -178,6 +198,7 @@ class PoseGraphManager : public rclcpp::Node {
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_coarse_aligned_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_fine_aligned_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_cloud_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr prior_map_pub_;
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_save_flag_;
 

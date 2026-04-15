@@ -62,6 +62,8 @@ class LoopClosure {
  private:
   // For coarse-to-fine alignment
   std::shared_ptr<kiss_matcher::KISSMatcher> global_reg_handler_                        = nullptr;
+  std::shared_ptr<kiss_matcher::KISSMatcher> reloc_global_reg_handler_                  = nullptr;
+  double reloc_voxel_res_                                                               = 0.0;
   std::shared_ptr<small_gicp::RegistrationPCL<PointType, PointType>> local_reg_handler_ = nullptr;
 
   pcl::PointCloud<PointType>::Ptr src_cloud_;
@@ -116,6 +118,21 @@ class LoopClosure {
   RegOutput performLoopClosure(const std::vector<PoseGraphNode> &keyframes,
                                const size_t query_idx,
                                const size_t match_idx);
+
+  // Build (or rebuild) a dedicated KISS-Matcher instance configured at
+  // `voxel_res` for relocalization. This needs to be called once before
+  // `performRelocalization` so the matcher's FPFH/solver radii match the
+  // resolution at which the submap and prior map are downsampled.
+  void setupRelocMatcher(double voxel_res);
+
+  // One-shot global registration of `src` into `tgt` using the same
+  // coarse-to-fine path as loop closure, but with the dedicated reloc-scale
+  // matcher. Both clouds are voxelized to the reloc resolution first so they
+  // share the same effective density. Stores the clouds for visualization via
+  // the existing `lc/src`, `lc/tgt`, `lc/coarse_alignment`, `lc/fine_alignment`
+  // topics.
+  RegOutput performRelocalization(const pcl::PointCloud<PointType> &src,
+                                  const pcl::PointCloud<PointType> &tgt);
 
   pcl::PointCloud<PointType> getSourceCloud();
   pcl::PointCloud<PointType> getTargetCloud();
