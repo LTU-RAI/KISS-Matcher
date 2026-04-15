@@ -310,6 +310,21 @@ RegOutput LoopClosure::performLoopClosure(const std::vector<PoseGraphNode> &keyf
   }
 }
 
+RegOutput LoopClosure::performRelocalization(const pcl::PointCloud<PointType> &src,
+                                             const pcl::PointCloud<PointType> &tgt) {
+  const auto &src_voxelized = *voxelize(src, config_.voxel_res_);
+  const auto &tgt_voxelized = *voxelize(tgt, config_.voxel_res_);
+
+  *src_cloud_ = src_voxelized;
+  *tgt_cloud_ = tgt_voxelized;
+
+  RCLCPP_INFO(logger_,
+              "\033[1;35mRelocalization: # src = %lu, # tgt = %lu\033[0m",
+              src_voxelized.size(),
+              tgt_voxelized.size());
+  return coarseToFineAlignment(src_voxelized, tgt_voxelized);
+}
+
 pcl::PointCloud<PointType> LoopClosure::getSourceCloud() { return *src_cloud_; }
 
 pcl::PointCloud<PointType> LoopClosure::getTargetCloud() { return *tgt_cloud_; }

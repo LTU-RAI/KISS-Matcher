@@ -58,6 +58,12 @@
       # Larger values make it more conservative (i.e., higher `num_inliers_threshold` enhances LC precision)
       num_inliers_threshold: 32 #50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
+    relocalization:
+      enabled: false                    # If true, localize into a previously saved map at startup
+      prior_map_pcd: ""                 # Absolute path to the prior accumulated map PCD
+      num_submap_scans: 5               # Number of incoming scans to accumulate before each match attempt
+      voxel_resolution: 0.5             # Voxel resolution for relocalization submap/target downsampling
+
     result:
       save_map_pcd: true
       save_map_bag: false                 # not implemented yet

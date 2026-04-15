@@ -13,6 +13,9 @@ launch:
   - arg: {name: odom_topic, default: "/odometry"}
   - arg: {name: scan_topic, default: "/cloud_registered"}
 
+  - arg: {name: relocalization_enabled, default: "false", description: Enable relocalization into a prior map}
+  - arg: {name: prior_map_pcd, default: "", description: Path to prior accumulated map PCD}
+
   - node:
       namespace: $(var namespace)
       pkg: kiss_matcher_ros
@@ -27,12 +30,16 @@ launch:
         - { from: '/odom',   to: $(var odom_topic) }
 
       param:
+        - from: $(var config_path)
+
         - name: "map_frame"
           value: "$(var map_frame)"
         - name: "base_frame"
           value: "$$(var base_frame)"
-
-        - from: $(var config_path)
+        - name: "relocalization.enabled"
+          value: "$(var relocalization_enabled)"
+        - name: "relocalization.prior_map_pcd"
+          value: "$(var prior_map_pcd)"
 
   - node:
       if: $(var start_rviz)

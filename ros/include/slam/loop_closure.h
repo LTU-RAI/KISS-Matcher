@@ -117,6 +117,14 @@ class LoopClosure {
                                const size_t query_idx,
                                const size_t match_idx);
 
+  // One-shot global registration of `src` into `tgt` using the same
+  // coarse-to-fine path as loop closure. Intended for initial relocalization
+  // against a previously saved map. Stores the clouds for visualization via
+  // the existing `lc/src`, `lc/tgt`, `lc/coarse_alignment`, `lc/fine_alignment`
+  // topics.
+  RegOutput performRelocalization(const pcl::PointCloud<PointType> &src,
+                                  const pcl::PointCloud<PointType> &tgt);
+
   pcl::PointCloud<PointType> getSourceCloud();
   pcl::PointCloud<PointType> getTargetCloud();
   pcl::PointCloud<PointType> getCoarseAlignedCloud();
