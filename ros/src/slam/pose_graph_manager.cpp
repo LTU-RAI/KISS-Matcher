@@ -53,6 +53,8 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   reloc_num_submap_scans_ =
       static_cast<size_t>(declare_parameter<int>("relocalization.num_submap_scans", 5));
   reloc_voxel_res_ = declare_parameter<double>("relocalization.voxel_resolution", 0.5);
+  reloc_submap_scan_dist_ =
+      declare_parameter<double>("relocalization.submap_scan_distance", 0.5);
 
   if (reloc_enabled_) {
     if (prior_map_pcd_path_.empty() || !fs::exists(prior_map_pcd_path_)) {
@@ -69,12 +71,18 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
         reloc_enabled_   = false;
         prior_map_cloud_ = nullptr;
       } else {
+        // Pre-voxelize to the relocalization resolution to bound memory and
+        // give performRelocalization a tgt cloud already at the matching
+        // density. The dedicated reloc matcher is configured with the same
+        // `reloc_voxel_res_` so FPFH/solver radii are consistent.
         const auto &voxelized = voxelize(prior_map_cloud_, reloc_voxel_res_);
         *prior_map_cloud_     = *voxelized;
         RCLCPP_INFO(this->get_logger(),
-                    "Relocalization enabled. Loaded prior map '%s' with %lu points (voxelized).",
+                    "Relocalization enabled. Loaded prior map '%s' with %lu points "
+                    "(voxelized at %.2fm).",
                     prior_map_pcd_path_.c_str(),
-                    prior_map_cloud_->size());
+                    prior_map_cloud_->size(),
+                    reloc_voxel_res_);
       }
     }
   }
@@ -99,6 +107,9 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
   loop_closure_          = std::make_shared<LoopClosure>(lc_config, this->get_logger());
+  if (reloc_enabled_) {
+    loop_closure_->setupRelocMatcher(reloc_voxel_res_);
+  }
   loop_detection_radius_ = lc_config.loop_detection_radius_;
 
   loop_detector_ = std::make_shared<LoopDetector>(ld_config, this->get_logger());
@@ -133,6 +144,12 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   debug_fine_aligned_pub_ =
       this->create_publisher<sensor_msgs::msg::PointCloud2>("lc/fine_alignment", qos);
   debug_cloud_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("lc/debug_cloud", qos);
+  prior_map_pub_   = this->create_publisher<sensor_msgs::msg::PointCloud2>("prior_map", qos);
+
+  if (reloc_enabled_ && prior_map_cloud_ && !prior_map_cloud_->empty()) {
+    // TRANSIENT_LOCAL QoS latches this for late subscribers (e.g. RViz).
+    prior_map_pub_->publish(toROSMsg(*prior_map_cloud_, map_frame_, this->now()));
+  }
 
   sub_odom_ = std::make_shared<message_filters::Subscriber<nav_msgs::msg::Odometry>>(this, "/odom");
   sub_scan_ =
@@ -723,11 +740,26 @@ void PoseGraphManager::saveFlagCallback(const std_msgs::msg::String::ConstShared
 }
 
 bool PoseGraphManager::tryRelocalize() {
+  // Only add a scan to the submap once the robot has moved at least
+  // `reloc_submap_scan_dist_` from the last accumulated pose — this spreads
+  // the submap out geometrically instead of stacking near-duplicate scans
+  // while the robot is stationary or moving slowly.
+  const Eigen::Vector3d current_pos = current_frame_.pose_.block<3, 1>(0, 3);
+  const bool should_accumulate =
+      !reloc_has_last_accum_pose_ ||
+      (current_pos - reloc_last_accum_pose_.block<3, 1>(0, 3)).norm() >= reloc_submap_scan_dist_;
+
+  if (!should_accumulate) {
+    return false;
+  }
+
   // Scans are stored in the lidar frame; stitch into the current-session odom
   // frame using the front-end pose before running global registration against
   // the prior map.
   reloc_submap_accum_ += transformPcd(current_frame_.scan_, current_frame_.pose_);
   ++reloc_num_accumulated_;
+  reloc_last_accum_pose_     = current_frame_.pose_;
+  reloc_has_last_accum_pose_ = true;
 
   if (reloc_num_accumulated_ < reloc_num_submap_scans_) {
     RCLCPP_INFO_THROTTLE(this->get_logger(),
@@ -747,7 +779,8 @@ bool PoseGraphManager::tryRelocalize() {
   const auto reg = loop_closure_->performRelocalization(reloc_submap_accum_, *prior_map_cloud_);
 
   reloc_submap_accum_.clear();
-  reloc_num_accumulated_ = 0;
+  reloc_num_accumulated_     = 0;
+  reloc_has_last_accum_pose_ = false;
 
   if (!reg.is_valid_) {
     RCLCPP_WARN(this->get_logger(),
@@ -759,7 +792,6 @@ bool PoseGraphManager::tryRelocalize() {
 
   T_priormap_from_newodom_ = reg.pose_;
   reloc_succeeded_         = true;
-  prior_map_cloud_.reset();
 
   RCLCPP_INFO(this->get_logger(),
               "\033[1;32mRelocalization succeeded (inliers=%lu, overlap=%.1f%%). "

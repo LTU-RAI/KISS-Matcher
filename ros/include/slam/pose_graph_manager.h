@@ -169,6 +169,9 @@ class PoseGraphManager : public rclcpp::Node {
   size_t reloc_num_submap_scans_  = 5;
   size_t reloc_num_accumulated_   = 0;
   double reloc_voxel_res_         = 0.5;
+  double reloc_submap_scan_dist_  = 0.5;
+  Eigen::Matrix4d reloc_last_accum_pose_ = Eigen::Matrix4d::Identity();
+  bool reloc_has_last_accum_pose_        = false;
   pcl::PointCloud<PointType>::Ptr prior_map_cloud_;
   pcl::PointCloud<PointType> reloc_submap_accum_;
   Eigen::Matrix4d T_priormap_from_newodom_ = Eigen::Matrix4d::Identity();
@@ -195,6 +198,7 @@ class PoseGraphManager : public rclcpp::Node {
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_coarse_aligned_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_fine_aligned_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_cloud_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr prior_map_pub_;
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_save_flag_;
 

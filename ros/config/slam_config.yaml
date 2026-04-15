@@ -18,7 +18,7 @@
     save_voxel_resolution: 0.1       # Resolution used when saving voxelized map
 
     keyframe:
-      keyframe_threshold: 0.50        # ⭐ [Unit: m] Distance threshold to add a new keyframe
+      keyframe_threshold: 1.00        # ⭐ [Unit: m] Distance threshold to add a new keyframe
       # NOTE(hlim): Once `num_submap_keyframes` is larger than 1,
       # Submap-to-submap registration is performed.
       # The main advantage of KISS-Matcher is its super-fast speed in submap matching!
@@ -59,10 +59,11 @@
       num_inliers_threshold: 32 #50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
     relocalization:
-      enabled: false                    # If true, localize into a previously saved map at startup
-      prior_map_pcd: ""                 # Absolute path to the prior accumulated map PCD
-      num_submap_scans: 5               # Number of incoming scans to accumulate before each match attempt
-      voxel_resolution: 0.5             # Voxel resolution for relocalization submap/target downsampling
+      enabled: true                    # If true, localize into a previously saved map at startup
+      prior_map_pcd: "/home/niksta/ros2_ws/src/KISS-Matcher/ros/data/campus_winter/result.pcd"                 # Absolute path to the prior accumulated map PCD
+      num_submap_scans: 10               # Number of incoming scans to accumulate before each match attempt
+      submap_scan_distance: 1.0         # [Unit: m] Minimum base-frame motion before accepting the next scan into the submap
+      voxel_resolution: 1.0             # Voxel resolution for relocalization submap/target downsampling
 
     result:
       save_map_pcd: true

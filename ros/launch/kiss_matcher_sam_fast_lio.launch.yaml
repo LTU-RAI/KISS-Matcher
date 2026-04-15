@@ -30,9 +30,9 @@ launch:
 
       param:
         - name: "map_frame"
-          value: "odom" #"$(var map_frame)"
+          value: "$(var map_frame)"
         - name: "base_frame"
-          value: "vectornav" #"$(var base_frame)"
+          value: "$(var base_frame)"
 
         - from: $(var config_path)
 
