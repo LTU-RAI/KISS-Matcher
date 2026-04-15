@@ -14,16 +14,16 @@
 
     store_voxelized_scan: false      # Save the cloud of node in voxelized one or not.
     voxel_resolution: 0.2 #0.2            # ⭐ [Unit: m] Voxel grid resolution for downsampling
-    map_voxel_resolution: 0.2        # Resolution used when building map. Only for visualization
-    save_voxel_resolution: 0.1       # Resolution used when saving voxelized map
+    map_voxel_resolution: 0.1        # Resolution used when building map. Only for visualization
+    save_voxel_resolution: 0.05       # Resolution used when saving voxelized map
 
     keyframe:
-      keyframe_threshold: 0.5        # ⭐ [Unit: m] Distance threshold to add a new keyframe
+      keyframe_threshold: 1.0        # ⭐ [Unit: m] Distance threshold to add a new keyframe
       # NOTE(hlim): Once `num_submap_keyframes` is larger than 1,
       # Submap-to-submap registration is performed.
       # The main advantage of KISS-Matcher is its super-fast speed in submap matching!
       # see: https://arxiv.org/pdf/2409.15615
-      num_submap_keyframes: 10        # ⭐ > 0. Number of keyframes per submap. It should be an odd number
+      num_submap_keyframes: 3        # ⭐ > 0. Number of keyframes per submap. It should be an odd number
 
     loop:
       verbose: true                  # Enable verbose output
@@ -41,11 +41,11 @@
       max_num_iter: 32                # Maximum iterations for local registration
       # NOTE(hlim): `scale_factor_for_corr_dist` * `voxel_resolution` is set to
       # distance threshold for ICP-variants (i.e., it is a factor relative to voxel resolution)
-      scale_factor_for_corr_dist: 10.0 #5.0 # ⭐ Scale for correspondence search distance
+      scale_factor_for_corr_dist: 5.0 #5.0 # ⭐ Scale for correspondence search distance
       # NOTE(hlim): The best value of `overlap_threshold` highly depends on `num_submap_keyframes`
       # Thus, heuristic tuning is required for the best performance.
       # Larger values make it more conservative (i.e., higher `overlap_threshold` enhances LC precision)
-      overlap_threshold: 30.0 #55.0         # ⭐ [Unit: %] Threshold for the ratio of ICP inliers
+      overlap_threshold: 55.0 #55.0         # ⭐ [Unit: %] Threshold for the ratio of ICP inliers
                                       # (i.e., the percentage of correspondences within `corr_dist`).
                                       # A value close to 100% means the source and target are nearly perfectly aligned.
                                       # In cases of partial overlap, this ratio can never reach 100%.
@@ -56,11 +56,11 @@
       # NOTE(hlim): The best value of `num_inliers_threshold` highly depends on `num_submap_keyframes`
       # Thus, heuristic tuning is required for the best performance.
       # Larger values make it more conservative (i.e., higher `num_inliers_threshold` enhances LC precision)
-      num_inliers_threshold: 32 #50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
+      num_inliers_threshold: 33 #50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
     result:
       save_map_pcd: true
-      save_map_bag: false                 # not implemented yet
+      save_map_bag: true                 # not implemented yet
       save_in_kitti_format: true
       seq_name: "test"
       save_dir: "/home/walp/Downloads/"                        # Absolute directory for saved results.

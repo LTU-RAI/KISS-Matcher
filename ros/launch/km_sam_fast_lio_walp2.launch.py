@@ -18,7 +18,7 @@ def generate_launch_description():
     
     namespace_arg = DeclareLaunchArgument(
         'namespace',
-        default_value='km_sam',
+        default_value='walp/km_sam',
         description='Namespace for the KISS-Matcher-SAM node'
     )
     
