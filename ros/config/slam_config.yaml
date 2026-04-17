@@ -5,12 +5,15 @@
 # =====================================================================================
 /**:
   ros__parameters:
-    loop_pub_hz: 0.1                 # Frequency to publish loop closures (Hz)
+    loop_pub_hz: 0.25                 # Frequency to publish loop closures (Hz)
     loop_detector_hz: 2.0            # Frequency to update loop by external loop detector (Hz)
     loop_nnsearch_hz: 2.0            # Frequency to update loop by nearest neighbor search (Hz)
     loop_pub_delayed_time: 5.0      # Delay before publishing loop closure results (sec)
-    map_update_hz: 0.2               # Frequency to update the map (Hz)
+    map_update_hz: 0.25               # Frequency to update the map (Hz)
     vis_hz: 10.0                      # Visualization update frequency (Hz)
+    tf_broadcast_hz: 20.0            # Rate at which `map -> odom` is re-broadcast. Decoupled
+                                     # from the sync callback so TFs keep flowing with fresh
+                                     # stamps during long post-loop-closure iSAM2 updates.
 
     store_voxelized_scan: false      # Save the cloud of node in voxelized one or not.
     voxel_resolution: 0.5 #0.2            # ⭐ [Unit: m] Voxel grid resolution for downsampling
@@ -59,7 +62,7 @@
       num_inliers_threshold: 32 #50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
     relocalization:
-      enabled: true                    # If true, localize into a previously saved map at startup
+      enabled: false                    # If true, localize into a previously saved map at startup
       prior_map_pcd: "/home/niksta/ros2_ws/src/KISS-Matcher/ros/data/campus_winter/result.pcd"                 # Absolute path to the prior accumulated map PCD
       num_submap_scans: 10               # Number of incoming scans to accumulate before each match attempt
       submap_scan_distance: 1.0         # [Unit: m] Minimum base-frame motion before accepting the next scan into the submap
