@@ -11,6 +11,9 @@
     loop_pub_delayed_time: 5.0      # Delay before publishing loop closure results (sec)
     map_update_hz: 0.2               # Frequency to update the map (Hz)
     vis_hz: 10.0                      # Visualization update frequency (Hz)
+    tf_broadcast_hz: 20.0            # Rate at which `map -> odom` is re-broadcast. Decoupled
+                                     # from the sync callback so TFs keep flowing with fresh
+                                     # stamps during long post-loop-closure iSAM2 updates.
 
     store_voxelized_scan: false      # Save the cloud of node in voxelized one or not.
     voxel_resolution: 0.2 #0.2            # ⭐ [Unit: m] Voxel grid resolution for downsampling
@@ -57,6 +60,13 @@
       # Thus, heuristic tuning is required for the best performance.
       # Larger values make it more conservative (i.e., higher `num_inliers_threshold` enhances LC precision)
       num_inliers_threshold: 33 #50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
+
+    relocalization:
+      enabled: false                    # If true, localize into a previously saved map at startup
+      prior_map_pcd: ""                 # Absolute path to the prior accumulated map PCD
+      num_submap_scans: 10               # Number of incoming scans to accumulate before each match attempt
+      submap_scan_distance: 1.0         # [Unit: m] Minimum base-frame motion before accepting the next scan into the submap
+      voxel_resolution: 1.0             # Voxel resolution for relocalization submap/target downsampling
 
     result:
       save_map_pcd: true
