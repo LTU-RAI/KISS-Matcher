@@ -150,7 +150,7 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   // loop_closures_pub_ =
   // this->create_publisher<pose_graph_tools_msgs::msg::PoseGraph>("/hydra_ros_node/external_loop_closures",
   // 10);
-  realtime_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("pose_stamped", qos);
+  realtime_odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("odom_corrected", qos);
   debug_src_pub_     = this->create_publisher<sensor_msgs::msg::PointCloud2>("lc/src", qos);
   debug_tgt_pub_     = this->create_publisher<sensor_msgs::msg::PointCloud2>("lc/tgt", qos);
   debug_coarse_aligned_pub_ =
@@ -541,9 +541,14 @@ void PoseGraphManager::visualizeCurrentData(const Eigen::Matrix4d &current_odom,
     odom_delta_                    = odom_delta_ * current_odom.inverse() * current_frame_.pose_;
     current_frame_.pose_corrected_ = last_corrected_pose_ * odom_delta_;
 
-    geometry_msgs::msg::PoseStamped ps =
+    const geometry_msgs::msg::PoseStamped ps =
         eigenToPoseStamped(current_frame_.pose_corrected_, map_frame_);
-    realtime_pose_pub_->publish(ps);
+    nav_msgs::msg::Odometry odom_out;
+    odom_out.header.stamp    = timestamp;
+    odom_out.header.frame_id = map_frame_;
+    odom_out.child_frame_id  = base_frame_;
+    odom_out.pose.pose       = ps.pose;
+    realtime_odom_pub_->publish(odom_out);
 
     // Follow REP-105: cache `map -> odom` correction for the broadcaster timer
     // to emit at a steady rate. T_map_odom = T_map_base_corrected *
