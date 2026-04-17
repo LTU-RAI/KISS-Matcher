@@ -109,6 +109,17 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
 
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
+  // With relocalization enabled the sync callback returns early until the
+  // prior-map alignment succeeds, so the cache would never be written and
+  // `map -> odom` would be absent during accumulation. Seed it with identity
+  // so the broadcaster timer emits a valid TF from startup; the first
+  // successful reloc tick overwrites it with the real transform.
+  if (reloc_enabled_) {
+    std::lock_guard<std::mutex> lock(tf_cache_mutex_);
+    cached_T_map_odom_ = Eigen::Matrix4d::Identity();
+    tf_cache_ready_    = true;
+  }
+
   loop_closure_          = std::make_shared<LoopClosure>(lc_config, this->get_logger());
   if (reloc_enabled_) {
     loop_closure_->setupRelocMatcher(reloc_voxel_res_);
