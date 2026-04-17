@@ -7,8 +7,9 @@ launch:
   - arg: {name: rviz_path,  default: $(find-pkg-share kiss_matcher_ros)/rviz/kiss_matcher_sam.rviz}
   - arg: {name: config_path,   default: $(find-pkg-share kiss_matcher_ros)/config/slam_config.yaml}
 
-  - arg: {name: map_frame , default: 'odom' , description: "Global map frame ID"}
-  - arg: {name: base_frame, default: 'vectornav', description: "Robot's base frame ID"}
+  - arg: {name: map_frame , default: 'map' , description: "Global (loop-closure corrected) frame"}
+  - arg: {name: odom_frame, default: 'odom', description: "Fast-LIO odometry frame (child of map)"}
+  - arg: {name: base_frame, default: 'vectornav', description: "Robot's base frame (kept for compatibility)"}
 
   - arg: {name: odom_topic, default: "/fast_lio/odometry"}
   - arg: {name: scan_topic, default: "/fast_lio/cloud_registered"}
@@ -31,6 +32,8 @@ launch:
       param:
         - name: "map_frame"
           value: "$(var map_frame)"
+        - name: "odom_frame"
+          value: "$(var odom_frame)"
         - name: "base_frame"
           value: "$(var base_frame)"
 

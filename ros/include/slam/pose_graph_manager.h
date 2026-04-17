@@ -109,6 +109,7 @@ class PoseGraphManager : public rclcpp::Node {
   bool tryRelocalize();
 
   std::string map_frame_;
+  std::string odom_frame_;
   std::string base_frame_;
   std::string package_path_;
   std::string seq_name_;
