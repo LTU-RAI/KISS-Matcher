@@ -9,6 +9,7 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   double loop_nnsearch_hz;
   double map_update_hz;
   double vis_hz;
+  double tf_broadcast_hz;
 
   LoopClosureConfig lc_config;
   LoopDetectorConfig ld_config;
@@ -24,6 +25,7 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   loop_pub_delayed_time_ = declare_parameter<double>("loop_pub_delayed_time", 60.0);
   map_update_hz          = declare_parameter<double>("map_update_hz", 0.2);
   vis_hz                 = declare_parameter<double>("vis_hz", 0.5);
+  tf_broadcast_hz        = declare_parameter<double>("tf_broadcast_hz", 50.0);
 
   store_voxelized_scan_            = declare_parameter<bool>("store_voxelized_scan", false);
   lc_config.voxel_res_             = declare_parameter<double>("voxel_resolution", 0.3);
@@ -191,6 +193,16 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   lc_vis_timer_ =
       this->create_wall_timer(std::chrono::duration<double>(1.0 / 20.0),
                               std::bind(&PoseGraphManager::visualizeLoopClosureClouds, this));
+
+  // Fixed-rate `map -> odom` broadcaster on a dedicated reentrant group so it
+  // keeps emitting TFs with fresh stamps even while the sync callback is
+  // blocked inside a long iSAM2 update after a loop closure.
+  tf_broadcast_cb_group_ =
+      this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+  tf_broadcast_timer_ = this->create_wall_timer(
+      std::chrono::duration<double>(1.0 / tf_broadcast_hz),
+      std::bind(&PoseGraphManager::broadcastMapOdomTf, this),
+      tf_broadcast_cb_group_);
 
   if (!lc_config.is_multilayer_env_) {
     RCLCPP_WARN(
@@ -522,25 +534,17 @@ void PoseGraphManager::visualizeCurrentData(const Eigen::Matrix4d &current_odom,
         eigenToPoseStamped(current_frame_.pose_corrected_, map_frame_);
     realtime_pose_pub_->publish(ps);
 
-    // Follow REP-105: publish `map -> odom` correction instead of `map -> base`.
-    // T_map_odom = T_map_base_corrected * (T_odom_base)^(-1). Fast-LIO keeps
-    // publishing `odom -> base` so the two broadcasters no longer collide.
+    // Follow REP-105: cache `map -> odom` correction for the broadcaster timer
+    // to emit at a steady rate. T_map_odom = T_map_base_corrected *
+    // (T_odom_base)^(-1). Fast-LIO keeps publishing `odom -> base` so the two
+    // broadcasters no longer collide.
     const Eigen::Matrix4d T_map_odom =
         current_frame_.pose_corrected_ * current_frame_.pose_.inverse();
-
-    geometry_msgs::msg::TransformStamped transform_stamped;
-    transform_stamped.header.stamp    = timestamp;
-    transform_stamped.header.frame_id = map_frame_;
-    transform_stamped.child_frame_id  = odom_frame_;
-    Eigen::Quaterniond q(T_map_odom.block<3, 3>(0, 0));
-    transform_stamped.transform.translation.x = T_map_odom(0, 3);
-    transform_stamped.transform.translation.y = T_map_odom(1, 3);
-    transform_stamped.transform.translation.z = T_map_odom(2, 3);
-    transform_stamped.transform.rotation.x    = q.x();
-    transform_stamped.transform.rotation.y    = q.y();
-    transform_stamped.transform.rotation.z    = q.z();
-    transform_stamped.transform.rotation.w    = q.w();
-    tf_broadcaster_->sendTransform(transform_stamped);
+    {
+      std::lock_guard<std::mutex> tf_lock(tf_cache_mutex_);
+      cached_T_map_odom_ = T_map_odom;
+      tf_cache_ready_    = true;
+    }
   }
 
   scan_pub_->publish(toROSMsg(
@@ -549,6 +553,29 @@ void PoseGraphManager::visualizeCurrentData(const Eigen::Matrix4d &current_odom,
     loop_detection_radius_pub_->publish(
         visualizeLoopDetectionRadius(corrected_path_.poses.back().pose.position));
   }
+}
+
+void PoseGraphManager::broadcastMapOdomTf() {
+  Eigen::Matrix4d T;
+  {
+    std::lock_guard<std::mutex> lock(tf_cache_mutex_);
+    if (!tf_cache_ready_) return;
+    T = cached_T_map_odom_;
+  }
+
+  geometry_msgs::msg::TransformStamped transform_stamped;
+  transform_stamped.header.stamp    = this->now();
+  transform_stamped.header.frame_id = map_frame_;
+  transform_stamped.child_frame_id  = odom_frame_;
+  const Eigen::Quaterniond q(T.block<3, 3>(0, 0));
+  transform_stamped.transform.translation.x = T(0, 3);
+  transform_stamped.transform.translation.y = T(1, 3);
+  transform_stamped.transform.translation.z = T(2, 3);
+  transform_stamped.transform.rotation.x    = q.x();
+  transform_stamped.transform.rotation.y    = q.y();
+  transform_stamped.transform.rotation.z    = q.z();
+  transform_stamped.transform.rotation.w    = q.w();
+  tf_broadcaster_->sendTransform(transform_stamped);
 }
 
 void PoseGraphManager::visualizePoseGraph() {
@@ -618,7 +645,7 @@ visualization_msgs::msg::Marker PoseGraphManager::visualizeLoopMarkers(
     const gtsam::Values &corrected_poses) const {
   visualization_msgs::msg::Marker edges;
   edges.type               = visualization_msgs::msg::Marker::LINE_LIST;
-  edges.scale.x            = 0.5f;
+  edges.scale.x            = 0.1f;
   edges.header.frame_id    = map_frame_;
   edges.pose.orientation.w = 1.0f;
   edges.color.r            = 1.0f;

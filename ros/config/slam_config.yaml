@@ -11,6 +11,9 @@
     loop_pub_delayed_time: 5.0      # Delay before publishing loop closure results (sec)
     map_update_hz: 0.2               # Frequency to update the map (Hz)
     vis_hz: 10.0                      # Visualization update frequency (Hz)
+    tf_broadcast_hz: 50.0            # Rate at which `map -> odom` is re-broadcast. Decoupled
+                                     # from the sync callback so TFs keep flowing with fresh
+                                     # stamps during long post-loop-closure iSAM2 updates.
 
     store_voxelized_scan: false      # Save the cloud of node in voxelized one or not.
     voxel_resolution: 0.5 #0.2            # ⭐ [Unit: m] Voxel grid resolution for downsampling

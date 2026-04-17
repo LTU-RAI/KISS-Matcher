@@ -88,6 +88,9 @@ class PoseGraphManager : public rclcpp::Node {
                             const rclcpp::Time &timestamp,
                             const std::string &frame_id);
   void visualizePoseGraph();
+  // Fixed-rate broadcaster for `map -> odom`. Runs on its own callback group so
+  // it keeps publishing even when the sync callback is stalled inside iSAM2.
+  void broadcastMapOdomTf();
 
   void performRegistration();
 
@@ -122,6 +125,13 @@ class PoseGraphManager : public rclcpp::Node {
 
   Eigen::Matrix4d last_corrected_pose_ = Eigen::Matrix4d::Identity();
   Eigen::Matrix4d odom_delta_          = Eigen::Matrix4d::Identity();
+
+  // Cache consumed by the fixed-rate TF broadcaster. The sync callback writes
+  // here; the timer reads and re-emits at a steady stamp so RViz never sees a
+  // gap in `map -> odom` during long iSAM2 updates after loop closures.
+  std::mutex tf_cache_mutex_;
+  Eigen::Matrix4d cached_T_map_odom_ = Eigen::Matrix4d::Identity();
+  bool tf_cache_ready_               = false;
   kiss_matcher::PoseGraphNode current_frame_;
   std::vector<kiss_matcher::PoseGraphNode> keyframes_;
 
@@ -218,6 +228,8 @@ class PoseGraphManager : public rclcpp::Node {
   rclcpp::TimerBase::SharedPtr graph_vis_timer_;
   rclcpp::TimerBase::SharedPtr lc_reg_timer_;
   rclcpp::TimerBase::SharedPtr lc_vis_timer_;
+  rclcpp::TimerBase::SharedPtr tf_broadcast_timer_;
+  rclcpp::CallbackGroup::SharedPtr tf_broadcast_cb_group_;
 };
 
 #endif  // KISS_MATCHER_POSE_GRAPH_MANAGER_H
