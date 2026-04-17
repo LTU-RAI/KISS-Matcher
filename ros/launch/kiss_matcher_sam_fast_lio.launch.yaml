@@ -3,6 +3,7 @@ launch:
   # In arg, all the default value should be string
   - arg: {name: start_rviz,  default: "false"}
   - arg: {name: namespace,  default: "km_sam", description: KISS-Matcher-SAM (KM-SAM)}
+  - arg: {name: use_sim_time, default: "false", description: "Set true when replaying a bag so TF stamps share the sim clock with Fast-LIO"}
 
   - arg: {name: rviz_path,  default: $(find-pkg-share kiss_matcher_ros)/rviz/kiss_matcher_sam.rviz}
   - arg: {name: config_path,   default: $(find-pkg-share kiss_matcher_ros)/config/slam_config.yaml}
@@ -30,6 +31,8 @@ launch:
         - { from: '/odom',   to: $(var odom_topic) }
 
       param:
+        - name: "use_sim_time"
+          value: $(var use_sim_time)
         - name: "map_frame"
           value: "$(var map_frame)"
         - name: "odom_frame"
@@ -45,6 +48,9 @@ launch:
       exec: rviz2
       name: km_sam_rviz
       launch-prefix: nice
-      output: screen         
+      output: screen
+      param:
+        - name: "use_sim_time"
+          value: $(var use_sim_time)
       args: >
         -d $(var rviz_path)
