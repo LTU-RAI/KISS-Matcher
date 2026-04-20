@@ -167,6 +167,7 @@ class PoseGraphManager : public rclcpp::Node {
   nav_msgs::msg::Path odom_path_, corrected_path_;
 
   bool store_voxelized_scan_ = false;
+  bool scan_in_sensor_frame_ = false;
 
   bool save_map_bag_         = false;
   bool save_map_pcd_         = false;
