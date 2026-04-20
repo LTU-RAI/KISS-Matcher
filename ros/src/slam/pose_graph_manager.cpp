@@ -28,6 +28,7 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   tf_broadcast_hz        = declare_parameter<double>("tf_broadcast_hz", 50.0);
 
   store_voxelized_scan_            = declare_parameter<bool>("store_voxelized_scan", false);
+  scan_in_sensor_frame_            = declare_parameter<bool>("scan_in_sensor_frame", false);
   lc_config.voxel_res_             = declare_parameter<double>("voxel_resolution", 0.3);
   scan_voxel_res_                  = lc_config.voxel_res_;
   map_voxel_res_                   = declare_parameter<double>("map_voxel_resolution", 1.0);
@@ -264,8 +265,12 @@ void PoseGraphManager::callbackNode(const nav_msgs::msg::Odometry::ConstSharedPt
   // NOTE(hlim): For clarification, 'current' refers to the real-time incoming messages,
   // while 'latest' indicates the last keyframe information already appended to keyframes_.
   Eigen::Matrix4d current_odom = current_frame_.pose_;
-  current_frame_               = PoseGraphNode(
-      *odom_msg, *scan_msg, latest_keyframe_idx, scan_voxel_res_, store_voxelized_scan_);
+  current_frame_               = PoseGraphNode(*odom_msg,
+                                  *scan_msg,
+                                  latest_keyframe_idx,
+                                  scan_voxel_res_,
+                                  store_voxelized_scan_,
+                                  scan_in_sensor_frame_);
 
   kiss_matcher::TicToc total_timer;
   kiss_matcher::TicToc local_timer;
