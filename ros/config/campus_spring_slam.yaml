@@ -74,7 +74,7 @@
     result:
       save_map_pcd: true
       save_map_bag: false                 # not implemented yet
-      save_in_kitti_format: true          # ros2 topic pub -1 /km_sam/kiss_matcher_sam/save_dir std_msgs/String "data: ''"      
+      save_in_kitti_format: true          # ros2 topic pub -1 /km_sam/save_dir std_msgs/String "data: ''"      
       seq_name: "campus_spring"
       save_dir: "/home/niksta//media/niksta/d70d3c70-5552-47eb-9d41-a97e911bd3c2/datasets/campus_spring/"                        # Absolute directory for saved results.
                                           # If empty, falls back to the process's current working directory.
