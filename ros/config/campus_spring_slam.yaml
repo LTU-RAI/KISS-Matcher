@@ -1,0 +1,79 @@
+# =====================================================================================
+# Parameter Guide:
+# - The ⭐ symbol highlights parameters that significantly impact SLAM performance.
+# - Tune these carefully based on your robot and environment
+# =====================================================================================
+/**:
+  ros__parameters:
+    loop_pub_hz: 0.25                 # Frequency to publish loop closures (Hz)
+    loop_detector_hz: 2.0            # Frequency to update loop by external loop detector (Hz)
+    loop_nnsearch_hz: 2.0            # Frequency to update loop by nearest neighbor search (Hz)
+    loop_pub_delayed_time: 5.0      # Delay before publishing loop closure results (sec)
+    map_update_hz: 0.25               # Frequency to update the map (Hz)
+    vis_hz: 10.0                      # Visualization update frequency (Hz)
+    tf_broadcast_hz: 20.0            # Rate at which `map -> odom` is re-broadcast. Decoupled
+                                     # from the sync callback so TFs keep flowing with fresh
+                                     # stamps during long post-loop-closure iSAM2 updates.
+
+    store_voxelized_scan: false      # Save the cloud of node in voxelized one or not.
+    voxel_resolution: 0.5 #0.2            # ⭐ [Unit: m] Voxel grid resolution for downsampling
+    map_voxel_resolution: 0.2        # Resolution used when building map. Only for visualization
+    save_voxel_resolution: 0.1       # Resolution used when saving voxelized map
+
+    keyframe:
+      keyframe_threshold: 1.00        # ⭐ [Unit: m] Distance threshold to add a new keyframe
+      # NOTE(hlim): Once `num_submap_keyframes` is larger than 1,
+      # Submap-to-submap registration is performed.
+      # The main advantage of KISS-Matcher is its super-fast speed in submap matching!
+      # see: https://arxiv.org/pdf/2409.15615
+      num_submap_keyframes: 20        # ⭐ > 0. Number of keyframes per submap. It should be an odd number
+
+    loop:
+      verbose: true                  # Enable verbose output
+      # If true, Z-axis differences are considered in loop detection.
+      # If false, loop detection assumes the robot moves mainly on a single horizontal plane.
+      is_multilayer_env: false                # ⭐ Whether the robot operates in a multilayer environment
+      # NOTE(hlim): You may need to tune `loop_detection_radius` and `loop_detection_timediff_threshold` for your environment
+      # after checking the Loop closure radius marker in Rviz.
+      loop_detection_radius: 20.0             # ⭐ [Unit: m] Radius for detecting loop candidates.
+      loop_detection_timediff_threshold: 60.0 #90.0 # ⭐ [Unit: t] Minimum time difference for loop candidates
+
+    local_reg:
+      num_threads: 8                  # Number of threads used for local registration
+      correspondences_number: 16 #20      # Minimum number of correspondences required
+      max_num_iter: 32                # Maximum iterations for local registration
+      # NOTE(hlim): `scale_factor_for_corr_dist` * `voxel_resolution` is set to
+      # distance threshold for ICP-variants (i.e., it is a factor relative to voxel resolution)
+      scale_factor_for_corr_dist: 5.0 #5.0 # ⭐ Scale for correspondence search distance
+      # NOTE(hlim): The best value of `overlap_threshold` highly depends on `num_submap_keyframes`
+      # Thus, heuristic tuning is required for the best performance.
+      # Larger values make it more conservative (i.e., higher `overlap_threshold` enhances LC precision)
+      overlap_threshold: 30.0 #55.0         # ⭐ [Unit: %] Threshold for the ratio of ICP inliers
+                                      # (i.e., the percentage of correspondences within `corr_dist`).
+                                      # A value close to 100% means the source and target are nearly perfectly aligned.
+                                      # In cases of partial overlap, this ratio can never reach 100%.
+                                      # If you set `num_submap_keyframes` as 1 (i.e., scan-to-scan matching),
+                                      # it's recommended to use a higher value.
+    global_reg:
+      enable: true
+      # NOTE(hlim): The best value of `num_inliers_threshold` highly depends on `num_submap_keyframes`
+      # Thus, heuristic tuning is required for the best performance.
+      # Larger values make it more conservative (i.e., higher `num_inliers_threshold` enhances LC precision)
+      num_inliers_threshold: 32 #50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
+
+    relocalization:
+      enabled: false                    # If true, localize into a previously saved map at startup
+      prior_map_pcd: ""                 # Absolute path to the prior accumulated map PCD
+      num_submap_scans: 10               # Number of incoming scans to accumulate before each match attempt
+      submap_scan_distance: 1.0         # [Unit: m] Minimum base-frame motion before accepting the next scan into the submap
+      voxel_resolution: 1.0             # Voxel resolution for relocalization submap/target downsampling
+
+    result:
+      save_map_pcd: true
+      save_map_bag: false                 # not implemented yet
+      save_in_kitti_format: true
+      seq_name: "campus_spring"
+      save_dir: "/home/niksta//media/niksta/d70d3c70-5552-47eb-9d41-a97e911bd3c2/datasets/campus_spring/"                        # Absolute directory for saved results.
+                                          # If empty, falls back to the process's current working directory.
+                                          # Used by the shutdown save path and as the default for the
+                                          # `save_dir` topic trigger.
