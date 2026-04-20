@@ -16,7 +16,7 @@
                                      # stamps during long post-loop-closure iSAM2 updates.
 
     store_voxelized_scan: false      # Save the cloud of node in voxelized one or not.
-    scan_in_sensor_frame: false      # Set true when the scan topic is in the sensor/lidar frame
+    scan_in_sensor_frame: true      # Set true when the scan topic is in the sensor/lidar frame
                                      # (e.g. raw driver output). Default false assumes the scan is
                                      # already in the odom frame (e.g. fast_lio/cloud_registered).
     voxel_resolution: 0.5 #0.2            # ⭐ [Unit: m] Voxel grid resolution for downsampling
@@ -74,7 +74,7 @@
     result:
       save_map_pcd: true
       save_map_bag: false                 # not implemented yet
-      save_in_kitti_format: true
+      save_in_kitti_format: true          # ros2 topic pub -1 /km_sam/kiss_matcher_sam/save_dir std_msgs/String "data: ''"      
       seq_name: "campus_spring"
       save_dir: "/home/niksta//media/niksta/d70d3c70-5552-47eb-9d41-a97e911bd3c2/datasets/campus_spring/"                        # Absolute directory for saved results.
                                           # If empty, falls back to the process's current working directory.
