@@ -38,20 +38,20 @@
       is_multilayer_env: false                # ⭐ Whether the robot operates in a multilayer environment
       # NOTE(hlim): You may need to tune `loop_detection_radius` and `loop_detection_timediff_threshold` for your environment
       # after checking the Loop closure radius marker in Rviz.
-      loop_detection_radius: 40.0             # ⭐ [Unit: m] Radius for detecting loop candidates.
-      loop_detection_timediff_threshold: 60.0 # ⭐ [Unit: t] Minimum time difference for loop candidates
+      loop_detection_radius: 50.0             # ⭐ [Unit: m] Radius for detecting loop candidates.
+      loop_detection_timediff_threshold: 45.0 # ⭐ [Unit: t] Minimum time difference for loop candidates
 
     local_reg:
       num_threads: 8                  # Number of threads used for local registration
-      correspondences_number: 20      # Minimum number of correspondences required
+      correspondences_number: 16      # Minimum number of correspondences required
       max_num_iter: 32                # Maximum iterations for local registration
       # NOTE(hlim): `scale_factor_for_corr_dist` * `voxel_resolution` is set to
       # distance threshold for ICP-variants (i.e., it is a factor relative to voxel resolution)
-      scale_factor_for_corr_dist: 5.0 #5.0 # ⭐ Scale for correspondence search distance
+      scale_factor_for_corr_dist: 7.5 #5.0 # ⭐ Scale for correspondence search distance
       # NOTE(hlim): The best value of `overlap_threshold` highly depends on `num_submap_keyframes`
       # Thus, heuristic tuning is required for the best performance.
       # Larger values make it more conservative (i.e., higher `overlap_threshold` enhances LC precision)
-      overlap_threshold: 55.0         # ⭐ [Unit: %] Threshold for the ratio of ICP inliers
+      overlap_threshold: 45.0         # ⭐ [Unit: %] Threshold for the ratio of ICP inliers
                                       # (i.e., the percentage of correspondences within `corr_dist`).
                                       # A value close to 100% means the source and target are nearly perfectly aligned.
                                       # In cases of partial overlap, this ratio can never reach 100%.
