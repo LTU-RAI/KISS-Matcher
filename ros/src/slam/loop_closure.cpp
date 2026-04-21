@@ -223,7 +223,8 @@ RegOutput LoopClosure::icpAlignment(const pcl::PointCloud<PointType> &src,
 }
 
 RegOutput LoopClosure::coarseToFineAlignment(const pcl::PointCloud<PointType> &src,
-                                             const pcl::PointCloud<PointType> &tgt) {
+                                             const pcl::PointCloud<PointType> &tgt,
+                                             const int num_inliers_threshold_override) {
   RegOutput reg_output;
   coarse_aligned_->clear();
 
@@ -240,21 +241,25 @@ RegOutput LoopClosure::coarseToFineAlignment(const pcl::PointCloud<PointType> &s
 
   const size_t num_inliers      = global_reg_handler_->getNumFinalInliers();
   reg_output.num_final_inliers_ = num_inliers;
+  const size_t effective_inliers_threshold =
+      (num_inliers_threshold_override >= 0)
+          ? static_cast<size_t>(num_inliers_threshold_override)
+          : config_.num_inliers_threshold_;
   if (config_.verbose_) {
-    if (num_inliers > config_.num_inliers_threshold_) {
+    if (num_inliers > effective_inliers_threshold) {
       RCLCPP_INFO(logger_,
                   "\033[1;32m# final inliers: %lu > %lu\033[0m",
                   num_inliers,
-                  config_.num_inliers_threshold_);
+                  effective_inliers_threshold);
     } else {
       RCLCPP_WARN(
-          logger_, "# final inliers: %lu < %lu", num_inliers, config_.num_inliers_threshold_);
+          logger_, "# final inliers: %lu < %lu", num_inliers, effective_inliers_threshold);
     }
   }
 
   // NOTE(hlim): A small number of inliers suggests that the initial alignment may have failed,
   // so fine alignment is meaningless.
-  if (!solution.valid || num_inliers < config_.num_inliers_threshold_) {
+  if (!solution.valid || num_inliers < effective_inliers_threshold) {
     return reg_output;
   } else {
     const auto &fine_output = icpAlignment(*coarse_aligned_, tgt);
@@ -352,7 +357,8 @@ RegOutput LoopClosure::performInterSessionLoopClosure(
     const std::vector<PoseGraphNode> &match_keyframes,
     const size_t query_idx,
     const size_t match_idx,
-    const double voxel_res_override) {
+    const double voxel_res_override,
+    const int num_inliers_threshold_override) {
   RegOutput reg_output;
   if (query_idx >= query_keyframes.size() || match_idx >= match_keyframes.size()) {
     return reg_output;
@@ -404,7 +410,8 @@ RegOutput LoopClosure::performInterSessionLoopClosure(
                 "\033[1;36mInter-session coarse-to-fine: # src = %lu, # tgt = %lu\033[0m",
                 src_voxelized.size(),
                 tgt_voxelized.size());
-    return coarseToFineAlignment(src_voxelized, tgt_voxelized);
+    return coarseToFineAlignment(src_voxelized, tgt_voxelized,
+                                 num_inliers_threshold_override);
   } else {
     RCLCPP_INFO(logger_,
                 "\033[1;36mInter-session GICP: # src = %lu, # tgt = %lu\033[0m",

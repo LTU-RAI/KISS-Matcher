@@ -89,6 +89,8 @@
       bootstrap_voxel_resolution: -1.0    # [Unit: m] Pre-voxelize resolution applied to BOTH
                                           # src and tgt submaps during bootstrap reloc only.
                                           # <= 0 reuses the global `voxel_resolution`.
+      bootstrap_num_inliers_threshold: -1  # Minimum KISS-Matcher inliers for bootstrap. < 0
+                                          # reuses `global_reg.num_inliers_threshold`.
       # Known 4x4 transform (row-major) from the new-odom frame to the prior-map
       # frame. Pre-applied to the query pose before candidate search so
       # KISS-Matcher only has to solve the residual misalignment. Default is

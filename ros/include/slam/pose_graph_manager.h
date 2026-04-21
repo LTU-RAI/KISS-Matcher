@@ -219,6 +219,10 @@ class PoseGraphManager : public rclcpp::Node {
   // steady-state voxel size is too coarse (few FPFH features) to recover an
   // initial alignment between sessions.
   double bootstrap_voxel_resolution_ = -1.0;
+  // Minimum KISS-Matcher inliers required to accept a bootstrap candidate.
+  // < 0 means "fall back to global_reg.num_inliers_threshold". Typically set
+  // lower than the global value when initial alignment is hard.
+  int bootstrap_num_inliers_threshold_ = -1;
   // Known offset from new-odom frame to prior-map frame. Pre-applied to the
   // query pose before candidate search + registration so KISS-Matcher only has
   // to solve the residual misalignment. Final T_priormap_from_newodom_ is

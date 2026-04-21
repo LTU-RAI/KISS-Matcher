@@ -78,11 +78,11 @@
       # --- Radius-based bootstrap reloc. Assumes the new session starts close
       # to the prior session's start pose; the current scan is matched against
       # prior keyframes within `bootstrap_radius` using KISS-Matcher + VGICP.
-      bootstrap_radius: 15.0              # [Unit: m] Radius for prior-keyframe search during bootstrap.
+      bootstrap_radius: 50.0              # [Unit: m] Radius for prior-keyframe search during bootstrap.
                                           # Must exceed the expected initial-alignment error.
-      bootstrap_scan_distance: 0.1        # [Unit: m] Throttle: push a new scan into the query buffer
+      bootstrap_scan_distance: 0.5        # [Unit: m] Throttle: push a new scan into the query buffer
                                           # only after this much motion.
-      bootstrap_submap_scans: 5           # Size of the query-side ring buffer. Scans are matched
+      bootstrap_submap_scans: 20           # Size of the query-side ring buffer. Scans are matched
                                           # submap-to-submap against prior_keyframes_ (which
                                           # contributes num_submap_keyframes on the target side).
       bootstrap_max_attempts_per_tick: 5  # Prior candidates tried per invocation.
@@ -92,15 +92,19 @@
                                           # Use a smaller value than the global setting to give
                                           # KISS-Matcher more FPFH features when the initial
                                           # alignment is failing with too few inliers.
+      bootstrap_num_inliers_threshold: 16  # Minimum KISS-Matcher inliers required to accept a
+                                          # bootstrap candidate. < 0 reuses `global_reg.num_inliers_threshold`.
+                                          # Typically lower than the steady-state value since the
+                                          # initial cross-session alignment is harder to find.
       # Known 4x4 transform (row-major) from the new-odom frame to the prior-map
       # frame. Pre-applied to the query pose before candidate search so
       # KISS-Matcher only has to solve the residual misalignment. Use this when
       # the new-session odometry is known to start with a bias (e.g. a faulty
       # bag with a 30 m Z offset). Default is identity (no prior knowledge).
       # Example below zeroes a 30 m Z offset in the new-odom frame:
-      bootstrap_T_init: [1.0, 0.0, 0.0,   0.0,
-                         0.0, 1.0, 0.0,   0.0,
-                         0.0, 0.0, 1.0, -30.0,
+      bootstrap_T_init: [1.0, 0.0, 0.0,   2.0,
+                         0.0, 1.0, 0.0,   5.0,
+                         0.0, 0.0, 1.0, -27.0,
                          0.0, 0.0, 0.0,   1.0]
 
     result:

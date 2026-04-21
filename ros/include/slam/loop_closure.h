@@ -107,8 +107,11 @@ class LoopClosure {
   RegOutput icpAlignment(const pcl::PointCloud<PointType> &src,
                          const pcl::PointCloud<PointType> &tgt);
 
+  // `num_inliers_threshold_override` >= 0 overrides config_.num_inliers_threshold_
+  // for this call only (used by bootstrap reloc when a looser threshold is needed).
   RegOutput coarseToFineAlignment(const pcl::PointCloud<PointType> &src,
-                                  const pcl::PointCloud<PointType> &tgt);
+                                  const pcl::PointCloud<PointType> &tgt,
+                                  const int num_inliers_threshold_override = -1);
 
   RegOutput performLoopClosure(const PoseGraphNode &query_keyframe,
                                const std::vector<PoseGraphNode> &keyframes);
@@ -138,12 +141,16 @@ class LoopClosure {
   // `voxel_res_override` > 0 pre-voxelizes both submaps at a custom resolution
   // instead of `config_.voxel_res_` — used by bootstrap reloc when FPFH needs
   // a different density than steady-state loop closure.
+  // `num_inliers_threshold_override` >= 0 overrides
+  // `config_.num_inliers_threshold_` for the coarse stage (bootstrap reloc
+  // often needs a looser threshold than steady-state LCs).
   RegOutput performInterSessionLoopClosure(
       const std::vector<PoseGraphNode> &query_keyframes,
       const std::vector<PoseGraphNode> &match_keyframes,
       const size_t query_idx,
       const size_t match_idx,
-      const double voxel_res_override = -1.0);
+      const double voxel_res_override            = -1.0,
+      const int num_inliers_threshold_override   = -1);
 
   pcl::PointCloud<PointType> getSourceCloud();
   pcl::PointCloud<PointType> getTargetCloud();

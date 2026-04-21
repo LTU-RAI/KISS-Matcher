@@ -64,6 +64,8 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
       declare_parameter<int>("relocalization.bootstrap_max_attempts_per_tick", 5));
   bootstrap_voxel_resolution_ = declare_parameter<double>(
       "relocalization.bootstrap_voxel_resolution", -1.0);
+  bootstrap_num_inliers_threshold_ = declare_parameter<int>(
+      "relocalization.bootstrap_num_inliers_threshold", -1);
   {
     const std::vector<double> identity16 = {
         1.0, 0.0, 0.0, 0.0,
@@ -1103,7 +1105,8 @@ bool PoseGraphManager::tryRelocalize() {
     const size_t match_idx = pair.second;
     const RegOutput reg    = loop_closure_->performInterSessionLoopClosure(
         query_vec, prior_keyframes_, query_center_idx, match_idx,
-        bootstrap_voxel_resolution_);
+        bootstrap_voxel_resolution_,
+        bootstrap_num_inliers_threshold_);
 
     // Publish the submaps KISS-Matcher was actually fed, so we can see them in
     // RViz even when bootstrap is failing (the normal /lc/* pubs only fire on
