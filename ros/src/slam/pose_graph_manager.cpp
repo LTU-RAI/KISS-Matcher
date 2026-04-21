@@ -59,6 +59,23 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   reloc_voxel_res_ = declare_parameter<double>("relocalization.voxel_resolution", 0.5);
   reloc_submap_scan_dist_ =
       declare_parameter<double>("relocalization.submap_scan_distance", 0.5);
+  prior_session_dir_ =
+      declare_parameter<std::string>("relocalization.prior_session_dir", "");
+  {
+    const std::string prior_prefix_str =
+        declare_parameter<std::string>("relocalization.prior_session_prefix", "a");
+    const std::string new_prefix_str =
+        declare_parameter<std::string>("relocalization.new_session_prefix", "b");
+    if (!prior_prefix_str.empty()) prior_session_prefix_ = prior_prefix_str.front();
+    if (!new_prefix_str.empty())   new_session_prefix_   = new_prefix_str.front();
+    if (prior_session_prefix_ == new_session_prefix_) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "prior_session_prefix and new_session_prefix must differ "
+                   "(got '%c' for both). Forcing new_session_prefix = 'b'.",
+                   prior_session_prefix_);
+      new_session_prefix_ = 'b';
+    }
+  }
 
   if (reloc_enabled_) {
     if (prior_map_pcd_path_.empty() || !fs::exists(prior_map_pcd_path_)) {
@@ -94,6 +111,7 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   save_map_bag_         = declare_parameter<bool>("result.save_map_bag", false);
   save_map_pcd_         = declare_parameter<bool>("result.save_map_pcd", false);
   save_in_kitti_format_ = declare_parameter<bool>("result.save_in_kitti_format", false);
+  save_pose_graph_      = declare_parameter<bool>("result.save_pose_graph", false);
   seq_name_             = declare_parameter<std::string>("result.seq_name", "");
   package_path_         = declare_parameter<std::string>("result.save_dir", "");
   if (package_path_.empty()) {
@@ -134,6 +152,21 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   isam_params_.relinearizeSkip      = 1;
   isam_handler_                     = std::make_shared<gtsam::ISAM2>(isam_params_);
 
+  if (!prior_session_dir_.empty()) {
+    if (!reloc_enabled_) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "prior_session_dir is set but relocalization.enabled is false. "
+                   "Prior keyframes cannot be placed in the new-session frame without "
+                   "a bootstrap reloc. Ignoring prior_session_dir.");
+      prior_session_dir_.clear();
+    } else if (!loadPriorSession()) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "loadPriorSession() failed. Continuing without inter-session LC.");
+      prior_session_dir_.clear();
+      prior_keyframes_.clear();
+    }
+  }
+
   odom_path_.header.frame_id      = map_frame_;
   corrected_path_.header.frame_id = map_frame_;
 
@@ -141,6 +174,7 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   // I deliberately avoided adding a '/' in front of the topic names.
   path_pub_           = this->create_publisher<nav_msgs::msg::Path>("path/original", qos);
   corrected_path_pub_ = this->create_publisher<nav_msgs::msg::Path>("path/corrected", qos);
+  prior_path_pub_     = this->create_publisher<nav_msgs::msg::Path>("path/prior", qos);
   map_pub_            = this->create_publisher<sensor_msgs::msg::PointCloud2>("global_map", qos);
   scan_pub_           = this->create_publisher<sensor_msgs::msg::PointCloud2>("curr_scan", qos);
   loop_detection_pub_ =
@@ -164,6 +198,17 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   if (reloc_enabled_ && prior_map_cloud_ && !prior_map_cloud_->empty()) {
     // TRANSIENT_LOCAL QoS latches this for late subscribers (e.g. RViz).
     prior_map_pub_->publish(toROSMsg(*prior_map_cloud_, map_frame_, this->now()));
+  }
+
+  if (!prior_keyframes_.empty()) {
+    nav_msgs::msg::Path prior_path;
+    prior_path.header.frame_id = map_frame_;
+    prior_path.header.stamp    = this->now();
+    prior_path.poses.reserve(prior_keyframes_.size());
+    for (const auto &kf : prior_keyframes_) {
+      prior_path.poses.push_back(eigenToPoseStamped(kf.pose_corrected_, map_frame_));
+    }
+    prior_path_pub_->publish(prior_path);
   }
 
   sub_odom_ = std::make_shared<message_filters::Subscriber<nav_msgs::msg::Odometry>>(this, "/odom");
@@ -200,6 +245,17 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
 
   lc_reg_timer_ = this->create_wall_timer(std::chrono::duration<double>(1.0 / 100.0),
                                           std::bind(&PoseGraphManager::performRegistration, this));
+
+  if (!prior_keyframes_.empty()) {
+    // Detect cross-session candidates at the same cadence as intra-session NN
+    // search; run registrations on a faster timer so we don't bottleneck.
+    inter_lc_detect_timer_ = this->create_wall_timer(
+        std::chrono::duration<double>(1.0 / loop_nnsearch_hz),
+        std::bind(&PoseGraphManager::detectInterSessionLoopClosure, this));
+    inter_lc_reg_timer_ = this->create_wall_timer(
+        std::chrono::duration<double>(1.0 / 100.0),
+        std::bind(&PoseGraphManager::performInterSessionRegistration, this));
+  }
 
   // 20 Hz is enough as long as it's faster than the full registration process.
   lc_vis_timer_ =
@@ -303,10 +359,14 @@ void PoseGraphManager::callbackNode(const nav_msgs::msg::Odometry::ConstSharedPt
     gtsam::noiseModel::Diagonal::shared_ptr prior_noise =
         gtsam::noiseModel::Diagonal::Variances(variance_vector);
 
-    gtsam_graph_.add(
-        gtsam::PriorFactor<gtsam::Pose3>(0, eigenToGtsam(current_frame_.pose_), prior_noise));
+    const gtsam::Symbol sym_first(new_session_prefix_, 0);
+    gtsam::PriorFactor<gtsam::Pose3> prior_factor(
+        sym_first, eigenToGtsam(current_frame_.pose_), prior_noise);
+    gtsam_graph_.add(prior_factor);
+    persistent_graph_.add(prior_factor);
 
-    init_esti_.insert(latest_keyframe_idx, eigenToGtsam(current_frame_.pose_));
+    init_esti_.insert(gtsam::Symbol(new_session_prefix_, latest_keyframe_idx),
+                      eigenToGtsam(current_frame_.pose_));
     ++latest_keyframe_idx;
     is_initialized_ = true;
 
@@ -329,9 +389,13 @@ void PoseGraphManager::callbackNode(const nav_msgs::msg::Odometry::ConstSharedPt
 
       {
         std::lock_guard<std::mutex> lock(graph_mutex_);
-        gtsam_graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(
-            latest_keyframe_idx - 1, latest_keyframe_idx, pose_from.between(pose_to), odom_noise));
-        init_esti_.insert(latest_keyframe_idx, pose_to);
+        const gtsam::Symbol sym_prev(new_session_prefix_, latest_keyframe_idx - 1);
+        const gtsam::Symbol sym_curr(new_session_prefix_, latest_keyframe_idx);
+        gtsam::BetweenFactor<gtsam::Pose3> odom_factor(
+            sym_prev, sym_curr, pose_from.between(pose_to), odom_noise);
+        gtsam_graph_.add(odom_factor);
+        persistent_graph_.add(odom_factor);
+        init_esti_.insert(sym_curr, pose_to);
       }
 
       ++latest_keyframe_idx;
@@ -358,14 +422,25 @@ void PoseGraphManager::callbackNode(const nav_msgs::msg::Odometry::ConstSharedPt
       {
         std::lock_guard<std::mutex> lock(realtime_pose_mutex_);
         corrected_esti_ = isam_handler_->calculateEstimate();
+        const gtsam::Symbol sym_latest(new_session_prefix_, latest_keyframe_idx - 1);
         last_corrected_pose_ =
-            gtsamToEigen(corrected_esti_.at<gtsam::Pose3>(corrected_esti_.size() - 1));
+            gtsamToEigen(corrected_esti_.at<gtsam::Pose3>(sym_latest));
         odom_delta_ = Eigen::Matrix4d::Identity();
       }
       if (loop_closure_added_) {
         std::lock_guard<std::mutex> lock(keyframes_mutex_);
-        for (size_t i = 0; i < corrected_esti_.size(); ++i) {
-          keyframes_[i].pose_corrected_ = gtsamToEigen(corrected_esti_.at<gtsam::Pose3>(i));
+        for (size_t i = 0; i < keyframes_.size(); ++i) {
+          const gtsam::Symbol sym(new_session_prefix_, i);
+          if (corrected_esti_.exists(sym)) {
+            keyframes_[i].pose_corrected_ = gtsamToEigen(corrected_esti_.at<gtsam::Pose3>(sym));
+          }
+        }
+        for (size_t i = 0; i < prior_keyframes_.size(); ++i) {
+          const gtsam::Symbol sym(prior_session_prefix_, i);
+          if (corrected_esti_.exists(sym)) {
+            prior_keyframes_[i].pose_corrected_ =
+                gtsamToEigen(corrected_esti_.at<gtsam::Pose3>(sym));
+          }
         }
         loop_closure_added_ = false;
       }
@@ -497,8 +572,12 @@ void PoseGraphManager::performRegistration() {
 
     {
       std::lock_guard<std::mutex> lock(graph_mutex_);
-      gtsam_graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(
-          query_idx, match_idx, pose_from.between(pose_to), loop_noise));
+      const gtsam::Symbol sym_q(new_session_prefix_, query_idx);
+      const gtsam::Symbol sym_m(new_session_prefix_, match_idx);
+      gtsam::BetweenFactor<gtsam::Pose3> loop_factor(
+          sym_q, sym_m, pose_from.between(pose_to), loop_noise);
+      gtsam_graph_.add(loop_factor);
+      persistent_graph_.add(loop_factor);
     }
 
     vis_loop_edges_.emplace_back(query_idx, match_idx);
@@ -534,6 +613,90 @@ void PoseGraphManager::performRegistration() {
     }
   }
   RCLCPP_INFO(this->get_logger(), "Reg: %.1f msec", reg_timer.toc());
+}
+
+void PoseGraphManager::detectInterSessionLoopClosure() {
+  // Only meaningful once the bootstrap reloc has placed new-session poses in
+  // the prior-map frame; before that, radius queries against prior_keyframes_
+  // would be nonsense.
+  if (!reloc_succeeded_ || prior_keyframes_.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(keyframes_mutex_);
+  if (!is_initialized_ || keyframes_.empty()) {
+    return;
+  }
+  const PoseGraphNode &query = keyframes_.back();
+  const auto idx_pairs =
+      loop_closure_->fetchInterSessionLoopCandidates(query, prior_keyframes_);
+  for (const auto &pair : idx_pairs) {
+    inter_loop_idx_pair_queue_.push(pair);
+  }
+}
+
+void PoseGraphManager::performInterSessionRegistration() {
+  if (inter_loop_idx_pair_queue_.empty()) {
+    return;
+  }
+  const auto [query_idx, match_idx] = inter_loop_idx_pair_queue_.front();
+  inter_loop_idx_pair_queue_.pop();
+
+  // Snapshot both vectors under their respective locks so registration
+  // doesn't race with sync-callback appends / ISAM2 pose rewrites.
+  std::vector<PoseGraphNode> new_snapshot;
+  std::vector<PoseGraphNode> prior_snapshot;
+  {
+    std::lock_guard<std::mutex> lock(keyframes_mutex_);
+    if (query_idx >= keyframes_.size() || match_idx >= prior_keyframes_.size()) {
+      return;
+    }
+    new_snapshot   = keyframes_;
+    prior_snapshot = prior_keyframes_;
+  }
+
+  const RegOutput reg_output = loop_closure_->performInterSessionLoopClosure(
+      new_snapshot, prior_snapshot, query_idx, match_idx);
+
+  if (!reg_output.is_valid_) {
+    if (reg_output.overlapness_ == 0.0) {
+      RCLCPP_WARN(this->get_logger(), "Inter-session LC rejected. KISS-Matcher failed");
+    } else {
+      RCLCPP_WARN(this->get_logger(),
+                  "Inter-session LC rejected. Overlapness: %.3f",
+                  reg_output.overlapness_);
+    }
+    return;
+  }
+
+  RCLCPP_INFO(this->get_logger(),
+              "Inter-session LC accepted (q=%lu ↔ prior=%lu). Overlapness: %.3f",
+              query_idx, match_idx, reg_output.overlapness_);
+
+  gtsam::Pose3 pose_from =
+      eigenToGtsam(reg_output.pose_ * new_snapshot[query_idx].pose_corrected_);
+  gtsam::Pose3 pose_to = eigenToGtsam(prior_snapshot[match_idx].pose_corrected_);
+
+  auto variance_vector =
+      (gtsam::Vector(6) << 1e-4, 1e-4, 1e-4, 1e-2, 1e-2, 1e-2).finished();
+  gtsam::noiseModel::Diagonal::shared_ptr loop_noise =
+      gtsam::noiseModel::Diagonal::Variances(variance_vector);
+
+  {
+    std::lock_guard<std::mutex> lock(graph_mutex_);
+    const gtsam::Symbol k_from(new_session_prefix_, query_idx);
+    const gtsam::Symbol k_to(prior_session_prefix_, match_idx);
+    gtsam::BetweenFactor<gtsam::Pose3> inter_factor(
+        k_from, k_to, pose_from.between(pose_to), loop_noise);
+    gtsam_graph_.add(inter_factor);
+    persistent_graph_.add(inter_factor);
+  }
+
+  vis_inter_loop_edges_.emplace_back(query_idx, match_idx);
+  loop_closure_added_    = true;
+  need_map_update_       = true;
+  need_graph_vis_update_ = true;
+  need_lc_cloud_vis_update_ = true;
+  succeeded_query_idx_   = query_idx;
 }
 
 void PoseGraphManager::visualizeCurrentData(const Eigen::Matrix4d &current_odom,
@@ -613,14 +776,19 @@ void PoseGraphManager::visualizePoseGraph() {
       std::lock_guard<std::mutex> lock(realtime_pose_mutex_);
       corrected_esti_copied = corrected_esti_;
     }
-    for (size_t i = 0; i < corrected_esti_copied.size(); ++i) {
-      gtsam::Pose3 pose_ = corrected_esti_copied.at<gtsam::Pose3>(i);
+    // Only emit new-session poses on the corrected_path. Prior-session poses
+    // are rendered separately on path/prior so the two trajectories can be
+    // styled/color-coded independently.
+    for (size_t i = 0; i < keyframes_.size(); ++i) {
+      const gtsam::Symbol sym(new_session_prefix_, i);
+      if (!corrected_esti_copied.exists(sym)) continue;
+      gtsam::Pose3 pose_ = corrected_esti_copied.at<gtsam::Pose3>(sym);
       corrected_odoms.points.emplace_back(
           pose_.translation().x(), pose_.translation().y(), pose_.translation().z());
 
       corrected_path.poses.push_back(gtsamToPoseStamped(pose_, map_frame_));
     }
-    if (!vis_loop_edges_.empty()) {
+    if (!vis_loop_edges_.empty() || !vis_inter_loop_edges_.empty()) {
       loop_detection_pub_->publish(visualizeLoopMarkers(corrected_esti_copied));
     }
     {
@@ -674,24 +842,50 @@ visualization_msgs::msg::Marker PoseGraphManager::visualizeLoopMarkers(
   edges.color.b            = 1.0f;
   edges.color.a            = 1.0f;
 
-  for (size_t i = 0; i < vis_loop_edges_.size(); ++i) {
-    if (vis_loop_edges_[i].first >= corrected_poses.size() ||
-        vis_loop_edges_[i].second >= corrected_poses.size()) {
-      continue;
-    }
-    gtsam::Pose3 pose  = corrected_poses.at<gtsam::Pose3>(vis_loop_edges_[i].first);
-    gtsam::Pose3 pose2 = corrected_poses.at<gtsam::Pose3>(vis_loop_edges_[i].second);
+  // Per-point colors override the global color, so intra-session edges can be
+  // drawn white and inter-session edges in a different color on the same
+  // marker.
+  std_msgs::msg::ColorRGBA intra_color;
+  intra_color.r = 1.0f; intra_color.g = 1.0f; intra_color.b = 1.0f; intra_color.a = 1.0f;
+  std_msgs::msg::ColorRGBA inter_color;
+  inter_color.r = 0.0f; inter_color.g = 1.0f; inter_color.b = 0.3f; inter_color.a = 1.0f;
 
+  auto push_segment = [&](const gtsam::Pose3 &p_a,
+                          const gtsam::Pose3 &p_b,
+                          const std_msgs::msg::ColorRGBA &color) {
     geometry_msgs::msg::Point p, p2;
-    p.x  = pose.translation().x();
-    p.y  = pose.translation().y();
-    p.z  = pose.translation().z();
-    p2.x = pose2.translation().x();
-    p2.y = pose2.translation().y();
-    p2.z = pose2.translation().z();
-
+    p.x  = p_a.translation().x();
+    p.y  = p_a.translation().y();
+    p.z  = p_a.translation().z();
+    p2.x = p_b.translation().x();
+    p2.y = p_b.translation().y();
+    p2.z = p_b.translation().z();
     edges.points.push_back(p);
     edges.points.push_back(p2);
+    edges.colors.push_back(color);
+    edges.colors.push_back(color);
+  };
+
+  for (size_t i = 0; i < vis_loop_edges_.size(); ++i) {
+    const gtsam::Symbol sym_a(new_session_prefix_, vis_loop_edges_[i].first);
+    const gtsam::Symbol sym_b(new_session_prefix_, vis_loop_edges_[i].second);
+    if (!corrected_poses.exists(sym_a) || !corrected_poses.exists(sym_b)) {
+      continue;
+    }
+    push_segment(corrected_poses.at<gtsam::Pose3>(sym_a),
+                 corrected_poses.at<gtsam::Pose3>(sym_b),
+                 intra_color);
+  }
+
+  for (size_t i = 0; i < vis_inter_loop_edges_.size(); ++i) {
+    const gtsam::Symbol sym_new(new_session_prefix_, vis_inter_loop_edges_[i].first);
+    const gtsam::Symbol sym_prior(prior_session_prefix_, vis_inter_loop_edges_[i].second);
+    if (!corrected_poses.exists(sym_new) || !corrected_poses.exists(sym_prior)) {
+      continue;
+    }
+    push_segment(corrected_poses.at<gtsam::Pose3>(sym_new),
+                 corrected_poses.at<gtsam::Pose3>(sym_prior),
+                 inter_color);
   }
   return edges;
 }
@@ -792,6 +986,18 @@ void PoseGraphManager::saveFlagCallback(const std_msgs::msg::String::ConstShared
                                          *voxelized_map);
     RCLCPP_INFO(this->get_logger(), "Accumulated map cloud saved in .pcd format");
   }
+  if (save_pose_graph_) {
+    if (!fs::exists(seq_directory)) {
+      fs::create_directories(seq_directory);
+    }
+    const std::string g2o_path = seq_directory + "/graph.g2o";
+    {
+      std::lock_guard<std::mutex> lock(graph_mutex_);
+      std::lock_guard<std::mutex> lock_rt(realtime_pose_mutex_);
+      gtsam::writeG2o(persistent_graph_, corrected_esti_, g2o_path);
+    }
+    RCLCPP_INFO(this->get_logger(), "Pose graph saved to %s", g2o_path.c_str());
+  }
 }
 
 bool PoseGraphManager::tryRelocalize() {
@@ -853,6 +1059,176 @@ bool PoseGraphManager::tryRelocalize() {
               "Pose graph will run in the prior-map frame.\033[0m",
               reg.num_final_inliers_,
               reg.overlapness_);
+  return true;
+}
+
+bool PoseGraphManager::loadPriorSession() {
+  const fs::path dir(prior_session_dir_);
+  const fs::path poses_path = dir / "poses_tum.txt";
+  const fs::path scans_dir  = dir / "scans";
+  const fs::path g2o_path   = dir / "graph.g2o";
+
+  if (!fs::exists(poses_path)) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "prior_session_dir has no poses_tum.txt: %s",
+                 poses_path.c_str());
+    return false;
+  }
+  if (!fs::exists(scans_dir)) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "prior_session_dir has no scans/ subdir: %s",
+                 scans_dir.c_str());
+    return false;
+  }
+
+  std::ifstream pf(poses_path);
+  std::string line;
+  std::vector<std::pair<double, Eigen::Matrix4d>> tum_poses;
+  while (std::getline(pf, line)) {
+    if (line.empty() || line[0] == '#') continue;
+    std::stringstream ss(line);
+    double t, x, y, z, qx, qy, qz, qw;
+    if (!(ss >> t >> x >> y >> z >> qx >> qy >> qz >> qw)) continue;
+    tf2::Quaternion q(qx, qy, qz, qw);
+    tf2::Matrix3x3 rot_tf(q);
+    Eigen::Matrix3d rot;
+    matrixTF2ToEigen(rot_tf, rot);
+    Eigen::Matrix4d pose       = Eigen::Matrix4d::Identity();
+    pose.block<3, 3>(0, 0)     = rot;
+    pose.block<3, 1>(0, 3)     = Eigen::Vector3d(x, y, z);
+    tum_poses.emplace_back(t, pose);
+  }
+  if (tum_poses.empty()) {
+    RCLCPP_ERROR(this->get_logger(), "poses_tum.txt is empty: %s", poses_path.c_str());
+    return false;
+  }
+
+  prior_keyframes_.clear();
+  prior_keyframes_.reserve(tum_poses.size());
+  for (size_t i = 0; i < tum_poses.size(); ++i) {
+    std::stringstream scan_ss;
+    scan_ss << scans_dir.string() << "/" << std::setw(6) << std::setfill('0') << i << ".pcd";
+    const std::string scan_path = scan_ss.str();
+
+    kiss_matcher::PoseGraphNode node;
+    if (pcl::io::loadPCDFile<PointType>(scan_path, node.scan_) != 0) {
+      RCLCPP_WARN(this->get_logger(),
+                  "Failed to load prior scan %s. Skipping keyframe %lu.",
+                  scan_path.c_str(), i);
+      continue;
+    }
+    node.pose_                   = tum_poses[i].second;
+    node.pose_corrected_         = tum_poses[i].second;
+    node.timestamp_              = tum_poses[i].first;
+    node.idx_                    = i;
+    // Prior keyframes never originate outgoing candidate queries.
+    node.nnsearch_processed_      = true;
+    node.loop_detector_processed_ = true;
+    prior_keyframes_.push_back(std::move(node));
+  }
+  if (prior_keyframes_.empty()) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "Failed to load any prior keyframes from %s",
+                 scans_dir.c_str());
+    return false;
+  }
+  RCLCPP_INFO(this->get_logger(),
+              "Loaded %lu prior keyframes from %s",
+              prior_keyframes_.size(), prior_session_dir_.c_str());
+
+  gtsam::NonlinearFactorGraph prior_graph;
+  gtsam::Values prior_values;
+  bool loaded_g2o = false;
+  if (fs::exists(g2o_path)) {
+    try {
+      auto parsed = gtsam::readG2o(g2o_path.string(), true /* is3D */);
+      // Re-key into prior_session_prefix_ namespace using the saved keys' indices.
+      // readG2o returns keys that may themselves be Symbols (when the writer
+      // used Symbol keys) — gtsam::Symbol handles a plain integer key as
+      // prefix='\0', so Symbol::index() extracts the original integer regardless.
+      for (const auto &key_pose : *parsed.second) {
+        const gtsam::Symbol old_sym(key_pose.key);
+        const gtsam::Symbol new_sym(prior_session_prefix_, old_sym.index());
+        prior_values.insert(new_sym,
+                            key_pose.value.cast<gtsam::Pose3>());
+      }
+      for (const auto &factor : *parsed.first) {
+        // Clone factor into a re-keyed version. Only BetweenFactor and
+        // PriorFactor appear in a kiss_matcher session.
+        if (auto bf = boost::dynamic_pointer_cast<
+                gtsam::BetweenFactor<gtsam::Pose3>>(factor)) {
+          const gtsam::Symbol old_k1(bf->key1());
+          const gtsam::Symbol old_k2(bf->key2());
+          prior_graph.add(gtsam::BetweenFactor<gtsam::Pose3>(
+              gtsam::Symbol(prior_session_prefix_, old_k1.index()),
+              gtsam::Symbol(prior_session_prefix_, old_k2.index()),
+              bf->measured(),
+              bf->noiseModel()));
+        } else if (auto pf2 = boost::dynamic_pointer_cast<
+                       gtsam::PriorFactor<gtsam::Pose3>>(factor)) {
+          const gtsam::Symbol old_k(pf2->key());
+          prior_graph.add(gtsam::PriorFactor<gtsam::Pose3>(
+              gtsam::Symbol(prior_session_prefix_, old_k.index()),
+              pf2->prior(),
+              pf2->noiseModel()));
+        }
+      }
+      loaded_g2o = true;
+      RCLCPP_INFO(this->get_logger(),
+                  "Loaded prior graph from %s (%lu factors, %lu values)",
+                  g2o_path.c_str(), prior_graph.size(), prior_values.size());
+    } catch (const std::exception &e) {
+      RCLCPP_WARN(this->get_logger(),
+                  "Failed to parse %s: %s. Falling back to synthesized chain.",
+                  g2o_path.c_str(), e.what());
+    }
+  }
+
+  if (!loaded_g2o) {
+    // Fallback: synthesize a rigid chain of BetweenFactors from consecutive
+    // pose deltas with a default noise model. No intra-prior LC edges are
+    // recovered, so the prior trajectory is effectively frozen shape-wise but
+    // can still rigidly translate/rotate as a block.
+    RCLCPP_WARN(this->get_logger(),
+                "No graph.g2o in %s; synthesizing prior chain from TUM poses.",
+                prior_session_dir_.c_str());
+    auto variance_vector =
+        (gtsam::Vector(6) << 1e-4, 1e-4, 1e-4, 1e-2, 1e-2, 1e-2).finished();
+    auto default_noise = gtsam::noiseModel::Diagonal::Variances(variance_vector);
+
+    const gtsam::Symbol sym0(prior_session_prefix_, 0);
+    prior_graph.add(gtsam::PriorFactor<gtsam::Pose3>(
+        sym0, eigenToGtsam(prior_keyframes_[0].pose_corrected_), default_noise));
+    prior_values.insert(sym0, eigenToGtsam(prior_keyframes_[0].pose_corrected_));
+
+    for (size_t i = 1; i < prior_keyframes_.size(); ++i) {
+      const gtsam::Symbol sym_prev(prior_session_prefix_, i - 1);
+      const gtsam::Symbol sym_curr(prior_session_prefix_, i);
+      gtsam::Pose3 p_prev = eigenToGtsam(prior_keyframes_[i - 1].pose_corrected_);
+      gtsam::Pose3 p_curr = eigenToGtsam(prior_keyframes_[i].pose_corrected_);
+      prior_graph.add(gtsam::BetweenFactor<gtsam::Pose3>(
+          sym_prev, sym_curr, p_prev.between(p_curr), default_noise));
+      prior_values.insert(sym_curr, p_curr);
+    }
+  }
+
+  // Merge into persistent graph so a subsequent save round-trips prior + new
+  // as a single combined session, and seed ISAM2 with the prior values so
+  // inter-session BetweenFactors can attach.
+  persistent_graph_ += prior_graph;
+  {
+    std::lock_guard<std::mutex> lock(graph_mutex_);
+    isam_handler_->update(prior_graph, prior_values);
+    isam_handler_->update();
+  }
+  {
+    std::lock_guard<std::mutex> lock(realtime_pose_mutex_);
+    corrected_esti_ = isam_handler_->calculateEstimate();
+  }
+
+  RCLCPP_INFO(this->get_logger(),
+              "Prior session incorporated into ISAM2 (prefix '%c').",
+              prior_session_prefix_);
   return true;
 }
 

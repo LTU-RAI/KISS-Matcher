@@ -134,6 +134,27 @@ class LoopClosure {
   RegOutput performRelocalization(const pcl::PointCloud<PointType> &src,
                                   const pcl::PointCloud<PointType> &tgt);
 
+  // Inter-session candidate selection: radius-filter `prior_keyframes` against
+  // `query_frame.pose_corrected_` only (no time-diff check — prior timestamps
+  // are from a previous run and not comparable). Returns up to
+  // `num_max_candidates` pairs where `first` is the query's own idx_ and
+  // `second` is the prior-keyframe index in the input vector.
+  LoopIdxPairs fetchInterSessionLoopCandidates(
+      const PoseGraphNode &query_frame,
+      const std::vector<PoseGraphNode> &prior_keyframes,
+      const size_t num_max_candidates = 3);
+
+  // Inter-session registration: stitches a submap from `query_keyframes`
+  // around `query_idx` and from `match_keyframes` around `match_idx`, then
+  // runs the same coarse-to-fine (or GICP-only) alignment as intra-session
+  // loop closure. Returns a RegOutput; the caller is responsible for adding
+  // a cross-prefix BetweenFactor on success.
+  RegOutput performInterSessionLoopClosure(
+      const std::vector<PoseGraphNode> &query_keyframes,
+      const std::vector<PoseGraphNode> &match_keyframes,
+      const size_t query_idx,
+      const size_t match_idx);
+
   pcl::PointCloud<PointType> getSourceCloud();
   pcl::PointCloud<PointType> getTargetCloud();
   pcl::PointCloud<PointType> getCoarseAlignedCloud();

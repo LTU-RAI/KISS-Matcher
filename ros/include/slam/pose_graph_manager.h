@@ -52,6 +52,8 @@
 #include <gtsam/nonlinear/Values.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
+#include <gtsam/slam/dataset.h>
+#include <gtsam/inference/Symbol.h>
 
 #include "../tictoc.hpp"
 #include "slam/loop_closure.h"
@@ -83,6 +85,8 @@ class PoseGraphManager : public rclcpp::Node {
   void buildMap();
   void detectLoopClosureByLoopDetector();
   void detectLoopClosureByNNSearch();
+  void detectInterSessionLoopClosure();
+  void performInterSessionRegistration();
 
   void visualizeCurrentData(const Eigen::Matrix4d &current_odom,
                             const rclcpp::Time &timestamp,
@@ -110,6 +114,13 @@ class PoseGraphManager : public rclcpp::Node {
   // scans are still being accumulated or if the current attempt failed — in
   // either case the caller should skip the rest of the tick.
   bool tryRelocalize();
+
+  // Load a previously-saved session (scans/ + poses_tum.txt + graph.g2o) from
+  // `prior_session_dir_`, populate `prior_keyframes_`, re-key the loaded graph
+  // with `prior_session_prefix_`, and seed ISAM2 with the prior session so
+  // inter-session BetweenFactors can attach to real nodes. Must be called once
+  // in the constructor after `isam_handler_` is constructed.
+  bool loadPriorSession();
 
   std::string map_frame_;
   std::string odom_frame_;
@@ -143,6 +154,11 @@ class PoseGraphManager : public rclcpp::Node {
 
   std::shared_ptr<gtsam::ISAM2> isam_handler_ = nullptr;
   gtsam::NonlinearFactorGraph gtsam_graph_;
+  // Mirror of every factor ever added to `gtsam_graph_`. `gtsam_graph_` is
+  // cleared after each ISAM2 update, so it cannot be used to serialize the
+  // complete pose graph. `persistent_graph_` is appended to at every add site
+  // and never cleared, so `writeG2o` can dump the full session on save.
+  gtsam::NonlinearFactorGraph persistent_graph_;
   gtsam::Values init_esti_;
   gtsam::Values corrected_esti_;
 
@@ -156,8 +172,12 @@ class PoseGraphManager : public rclcpp::Node {
 
   size_t succeeded_query_idx_;
   std::vector<std::pair<size_t, size_t>> vis_loop_edges_;
+  // Inter-session LC edges: first = new-session query idx, second = prior idx
+  std::vector<std::pair<size_t, size_t>> vis_inter_loop_edges_;
   // pose_graph_tools_msgs::msg::PoseGraph loop_msgs_;
   std::queue<LoopIdxPair> loop_idx_pair_queue_;
+  // Inter-session queue: (new-session query idx, prior-session match idx)
+  std::queue<std::pair<size_t, size_t>> inter_loop_idx_pair_queue_;
 
   kiss_matcher::TicToc timer_;
 
@@ -172,7 +192,18 @@ class PoseGraphManager : public rclcpp::Node {
   bool save_map_bag_         = false;
   bool save_map_pcd_         = false;
   bool save_in_kitti_format_ = false;
+  bool save_pose_graph_      = false;
   double last_lc_time_       = 0.0;
+
+  // Multi-session GTSAM symbol prefixes. When no prior session is loaded,
+  // only `new_session_prefix_` is used and behavior matches a plain-integer
+  // key space (Symbol just wraps the same index with a prefix tag).
+  char prior_session_prefix_ = 'a';
+  char new_session_prefix_   = 'b';
+
+  // Prior session state (loaded once at startup when prior_session_dir is set).
+  std::string prior_session_dir_;
+  std::vector<kiss_matcher::PoseGraphNode> prior_keyframes_;
 
   // Relocalization state
   bool reloc_enabled_             = false;
@@ -199,6 +230,7 @@ class PoseGraphManager : public rclcpp::Node {
   // ROS2 interface
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr corrected_path_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr prior_path_pub_;
 
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr scan_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub_;
@@ -228,6 +260,8 @@ class PoseGraphManager : public rclcpp::Node {
   rclcpp::TimerBase::SharedPtr loop_nnsearch_timer_;
   rclcpp::TimerBase::SharedPtr graph_vis_timer_;
   rclcpp::TimerBase::SharedPtr lc_reg_timer_;
+  rclcpp::TimerBase::SharedPtr inter_lc_detect_timer_;
+  rclcpp::TimerBase::SharedPtr inter_lc_reg_timer_;
   rclcpp::TimerBase::SharedPtr lc_vis_timer_;
   rclcpp::TimerBase::SharedPtr tf_broadcast_timer_;
   rclcpp::CallbackGroup::SharedPtr tf_broadcast_cb_group_;

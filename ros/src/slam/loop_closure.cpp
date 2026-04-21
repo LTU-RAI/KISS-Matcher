@@ -376,6 +376,106 @@ RegOutput LoopClosure::performRelocalization(const pcl::PointCloud<PointType> &s
   return reg_output;
 }
 
+LoopIdxPairs LoopClosure::fetchInterSessionLoopCandidates(
+    const PoseGraphNode &query_frame,
+    const std::vector<PoseGraphNode> &prior_keyframes,
+    const size_t num_max_candidates) {
+  if (prior_keyframes.empty()) return {};
+
+  LoopCandidates candidates;
+  candidates.reserve(prior_keyframes.size() / 100);
+  const auto &loop_det_radi = config_.loop_detection_radius_;
+
+  for (size_t idx = 0; idx < prior_keyframes.size(); ++idx) {
+    const double dist =
+        calculateDistance(prior_keyframes[idx].pose_corrected_, query_frame.pose_corrected_);
+    if (dist < loop_det_radi) {
+      LoopCandidate c;
+      c.idx_      = idx;  // index into the prior_keyframes vector
+      c.distance_ = dist;
+      c.found_    = true;
+      candidates.emplace_back(c);
+    }
+  }
+  if (candidates.empty()) return {};
+
+  std::sort(candidates.begin(), candidates.end(),
+            [](const LoopCandidate &a, const LoopCandidate &b) {
+              return a.distance_ < b.distance_;
+            });
+
+  LoopIdxPairs idx_pairs;
+  const size_t num_selected = std::min(num_max_candidates, candidates.size());
+  for (size_t i = 0; i < num_selected; ++i) {
+    idx_pairs.emplace_back(query_frame.idx_, candidates[i].idx_);
+  }
+  return idx_pairs;
+}
+
+RegOutput LoopClosure::performInterSessionLoopClosure(
+    const std::vector<PoseGraphNode> &query_keyframes,
+    const std::vector<PoseGraphNode> &match_keyframes,
+    const size_t query_idx,
+    const size_t match_idx) {
+  RegOutput reg_output;
+  if (query_idx >= query_keyframes.size() || match_idx >= match_keyframes.size()) {
+    return reg_output;
+  }
+
+  const size_t num_submap_keyframes = config_.num_submap_keyframes_;
+  const size_t submap_range         = num_submap_keyframes / 2;
+  const size_t num_approx = query_keyframes[query_idx].scan_.size() * num_submap_keyframes;
+
+  pcl::PointCloud<PointType> src_accum, tgt_accum;
+  src_accum.reserve(num_approx);
+  tgt_accum.reserve(num_approx);
+
+  auto accumulateSubmap = [&](const std::vector<PoseGraphNode> &src,
+                              size_t center_idx,
+                              pcl::PointCloud<PointType> &accum) {
+    const size_t start = (center_idx < submap_range) ? 0 : center_idx - submap_range;
+    const size_t end   = std::min(center_idx + submap_range + 1, src.size());
+    for (size_t i = start; i < end; ++i) {
+      accum += transformPcd(src[i].scan_, src[i].pose_corrected_);
+    }
+  };
+
+  const bool build_submap = (num_submap_keyframes > 1);
+  if (build_submap) {
+    accumulateSubmap(query_keyframes, query_idx, src_accum);
+    accumulateSubmap(match_keyframes, match_idx, tgt_accum);
+  } else {
+    src_accum = transformPcd(query_keyframes[query_idx].scan_,
+                             query_keyframes[query_idx].pose_corrected_);
+    if (config_.enable_global_registration_) {
+      tgt_accum = transformPcd(match_keyframes[match_idx].scan_,
+                               match_keyframes[match_idx].pose_corrected_);
+    } else {
+      accumulateSubmap(match_keyframes, match_idx, tgt_accum);
+    }
+  }
+
+  const pcl::PointCloud<PointType> src_voxelized = *voxelize(src_accum, config_.voxel_res_);
+  const pcl::PointCloud<PointType> tgt_voxelized = *voxelize(tgt_accum, config_.voxel_res_);
+
+  *src_cloud_ = src_voxelized;
+  *tgt_cloud_ = tgt_voxelized;
+
+  if (config_.enable_global_registration_) {
+    RCLCPP_INFO(logger_,
+                "\033[1;36mInter-session coarse-to-fine: # src = %lu, # tgt = %lu\033[0m",
+                src_voxelized.size(),
+                tgt_voxelized.size());
+    return coarseToFineAlignment(src_voxelized, tgt_voxelized);
+  } else {
+    RCLCPP_INFO(logger_,
+                "\033[1;36mInter-session GICP: # src = %lu, # tgt = %lu\033[0m",
+                src_voxelized.size(),
+                tgt_voxelized.size());
+    return icpAlignment(src_voxelized, tgt_voxelized);
+  }
+}
+
 pcl::PointCloud<PointType> LoopClosure::getSourceCloud() { return *src_cloud_; }
 
 pcl::PointCloud<PointType> LoopClosure::getTargetCloud() { return *tgt_cloud_; }
