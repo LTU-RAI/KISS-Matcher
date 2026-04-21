@@ -75,8 +75,8 @@
       save_map_pcd: true
       save_map_bag: false                 # not implemented yet
       save_in_kitti_format: true          # ros2 topic pub -1 /km_sam/save_dir std_msgs/String "data: ''"      
-      seq_name: "campus_spring"
-      save_dir: "/home/niksta//Documents/datasets/campus_spring"                        # Absolute directory for saved results.
+      seq_name: "campus_winter"
+      save_dir: "/home/niksta//Documents/datasets/campus_winter"                        # Absolute directory for saved results.
                                           # If empty, falls back to the process's current working directory.
                                           # Used by the shutdown save path and as the default for the
                                           # `save_dir` topic trigger.
