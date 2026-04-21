@@ -6,11 +6,11 @@ launch:
   - arg: {name: use_sim_time, default: "false", description: "Set true when replaying a bag so TF stamps share the sim clock with Fast-LIO"}
 
   - arg: {name: rviz_path,  default: $(find-pkg-share kiss_matcher_ros)/rviz/kiss_matcher_sam.rviz}
-  - arg: {name: config_path,   default: $(find-pkg-share kiss_matcher_ros)/config/campus_robinw_slam.yaml}
+  - arg: {name: config_path,   default: $(find-pkg-share kiss_matcher_ros)/config/campus_ouster_slam.yaml}
 
   - arg: {name: map_frame , default: 'map' , description: "Global (loop-closure corrected) frame"}
   - arg: {name: odom_frame, default: 'odom', description: "Fast-LIO odometry frame (child of map)"}
-  - arg: {name: base_frame, default: 'seyond', description: "Robot's base frame (kept for compatibility)"}
+  - arg: {name: base_frame, default: 'vectornav', description: "Robot's base frame (kept for compatibility)"}
 
   - arg: {name: odom_topic, default: "/fast_lio/odometry"}
   - arg: {name: scan_topic, default: "/fast_lio/cloud_registered_lidar"}

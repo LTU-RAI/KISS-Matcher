@@ -24,12 +24,12 @@
     save_voxel_resolution: 0.4       # Resolution used when saving voxelized map
 
     keyframe:
-      keyframe_threshold: 1.0 #0.5        # ⭐ [Unit: m] Distance threshold to add a new keyframe
+      keyframe_threshold: 0.5        # ⭐ [Unit: m] Distance threshold to add a new keyframe
       # NOTE(hlim): Once `num_submap_keyframes` is larger than 1,
       # Submap-to-submap registration is performed.
       # The main advantage of KISS-Matcher is its super-fast speed in submap matching!
       # see: https://arxiv.org/pdf/2409.15615
-      num_submap_keyframes: 10        # ⭐ > 0. Number of keyframes per submap. It should be an odd number
+      num_submap_keyframes: 20        # ⭐ > 0. Number of keyframes per submap. It should be an odd number
 
     loop:
       verbose: true                  # Enable verbose output
@@ -39,7 +39,7 @@
       # NOTE(hlim): You may need to tune `loop_detection_radius` and `loop_detection_timediff_threshold` for your environment
       # after checking the Loop closure radius marker in Rviz.
       loop_detection_radius: 40.0             # ⭐ [Unit: m] Radius for detecting loop candidates.
-      loop_detection_timediff_threshold: 60.0 # ⭐ [Unit: t] Minimum time difference for loop candidates
+      loop_detection_timediff_threshold: 45.0 # ⭐ [Unit: t] Minimum time difference for loop candidates
 
     local_reg:
       num_threads: 8                  # Number of threads used for local registration
@@ -111,7 +111,7 @@
       save_map_bag: false                 # not implemented yet
       save_in_kitti_format: true          # ros2 topic pub -1 /km_sam/save_dir std_msgs/String "data: ''"      
       save_pose_graph: true               # If true, dump graph.g2o alongside scans+poses (for inter-session LC)
-      seq_name: "campus_robinw"
+      seq_name: "campus_ouster"
       save_dir: "/home/niksta/Documents/datasets"                          # Absolute directory for saved results.
                                           # If empty, falls back to the process's current working directory.
                                           # Used by the shutdown save path and as the default for the
