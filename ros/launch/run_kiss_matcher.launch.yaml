@@ -1,0 +1,32 @@
+---
+launch:
+  - arg: { name: src_path,                description: "Source cloud file (.bin, .pcd, .ply)" }
+  - arg: { name: tgt_path,                description: "Target cloud file (.bin, .pcd, .ply)" }
+  - arg: { name: resolution,              default: "0.1" }
+  - arg: { name: frame_id,                default: "map" }
+  - arg: { name: source_frame,            default: "source" }
+  - arg: { name: target_frame,            default: "target" }
+  - arg: { name: publish_rate,            default: "1.0" }
+  - arg: { name: save_transformed_cloud,  default: "false" }
+  - arg: { name: transformed_cloud_path,  default: "" }
+  - arg: { name: save_tf,                 default: "false" }
+  - arg: { name: tf_path,                 default: "" }
+
+  - node:
+      pkg: kiss_matcher_ros
+      exec: run_kiss_matcher_node.py
+      name: run_kiss_matcher
+      output: screen
+      on_exit: shutdown
+      param:
+        - { name: src_path,               value: "$(var src_path)" }
+        - { name: tgt_path,               value: "$(var tgt_path)" }
+        - { name: resolution,             value: "$(var resolution)" }
+        - { name: frame_id,               value: "$(var frame_id)" }
+        - { name: source_frame,           value: "$(var source_frame)" }
+        - { name: target_frame,           value: "$(var target_frame)" }
+        - { name: publish_rate,           value: "$(var publish_rate)" }
+        - { name: save_transformed_cloud, value: "$(var save_transformed_cloud)" }
+        - { name: transformed_cloud_path, value: "$(var transformed_cloud_path)" }
+        - { name: save_tf,                value: "$(var save_tf)" }
+        - { name: tf_path,                value: "$(var tf_path)" }
