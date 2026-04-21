@@ -65,20 +65,23 @@
       num_inliers_threshold: 32 #50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
     relocalization:
-      enabled: false                    # If true, localize into a previously saved map at startup
-      prior_map_pcd: "/home/niksta/ros2_ws/src/KISS-Matcher/ros/data/campus_winter/result.pcd"                 # Absolute path to the prior accumulated map PCD
-      num_submap_scans: 10               # Number of incoming scans to accumulate before each match attempt
-      submap_scan_distance: 1.0         # [Unit: m] Minimum base-frame motion before accepting the next scan into the submap
-      voxel_resolution: 1.0             # Voxel resolution for relocalization submap/target downsampling
-      # Continuous inter-session loop closure. When prior_session_dir is set,
-      # the directory is expected to contain scans/NNNNNN.pcd, poses_tum.txt,
-      # and graph.g2o (as produced by result.save_pose_graph). Prior keyframes
-      # become real nodes in the ISAM2 graph and every new keyframe searches
-      # for inter-session loop closures against them after the one-shot
-      # bootstrap relocalization succeeds.
-      prior_session_dir: ""             # Empty disables inter-session LC (legacy one-shot reloc only)
+      enabled: false                    # If true, bootstrap into a previously saved session at startup
+      prior_map_pcd: "/home/niksta/ros2_ws/src/KISS-Matcher/ros/data/campus_winter/result.pcd"  # Visualization only (published on /prior_map). Leave empty to skip.
+      # Prior session dir is required when reloc is enabled. The directory must
+      # contain scans/NNNNNN.pcd, poses_tum.txt, and graph.g2o (as produced by
+      # result.save_pose_graph). Prior keyframes become real nodes in the ISAM2
+      # graph; the bootstrap step below runs radius-based inter-session loop
+      # closure against them to place new-session odometry into the prior frame.
+      prior_session_dir: ""
       prior_session_prefix: "a"         # Single-char GTSAM symbol prefix for prior-session keys
       new_session_prefix: "b"           # Single-char GTSAM symbol prefix for this run's keys
+      # --- Radius-based bootstrap reloc. Assumes the new session starts close
+      # to the prior session's start pose; the current scan is matched against
+      # prior keyframes within `bootstrap_radius` using KISS-Matcher + VGICP.
+      bootstrap_radius: 15.0              # [Unit: m] Radius for prior-keyframe search during bootstrap.
+                                          # Must exceed the expected initial-alignment error.
+      bootstrap_scan_distance: 0.5        # [Unit: m] Throttle: only attempt once per this much motion.
+      bootstrap_max_attempts_per_tick: 5  # Prior candidates tried per invocation.
 
     result:
       save_map_pcd: true

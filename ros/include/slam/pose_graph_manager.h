@@ -206,17 +206,18 @@ class PoseGraphManager : public rclcpp::Node {
   std::vector<kiss_matcher::PoseGraphNode> prior_keyframes_;
 
   // Relocalization state
-  bool reloc_enabled_             = false;
-  bool reloc_succeeded_           = false;
+  bool reloc_enabled_                = false;
+  bool reloc_succeeded_              = false;
   std::string prior_map_pcd_path_;
-  size_t reloc_num_submap_scans_  = 5;
-  size_t reloc_num_accumulated_   = 0;
-  double reloc_voxel_res_         = 0.5;
-  double reloc_submap_scan_dist_  = 0.5;
+  // Radius-based inter-session bootstrap parameters.
+  double bootstrap_radius_           = 15.0;
+  double bootstrap_scan_distance_    = 0.5;
+  size_t bootstrap_max_attempts_per_tick_ = 5;
   Eigen::Matrix4d reloc_last_accum_pose_ = Eigen::Matrix4d::Identity();
   bool reloc_has_last_accum_pose_        = false;
+  // Loaded from `relocalization.prior_map_pcd` solely for publishing on
+  // /prior_map. Actual bootstrap alignment now matches against prior_keyframes_.
   pcl::PointCloud<PointType>::Ptr prior_map_cloud_;
-  pcl::PointCloud<PointType> reloc_submap_accum_;
   Eigen::Matrix4d T_priormap_from_newodom_ = Eigen::Matrix4d::Identity();
 
   std::shared_ptr<kiss_matcher::LoopClosure> loop_closure_;

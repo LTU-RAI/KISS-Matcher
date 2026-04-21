@@ -54,11 +54,12 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
 
   reloc_enabled_ = declare_parameter<bool>("relocalization.enabled", false);
   prior_map_pcd_path_ = declare_parameter<std::string>("relocalization.prior_map_pcd", "");
-  reloc_num_submap_scans_ =
-      static_cast<size_t>(declare_parameter<int>("relocalization.num_submap_scans", 5));
-  reloc_voxel_res_ = declare_parameter<double>("relocalization.voxel_resolution", 0.5);
-  reloc_submap_scan_dist_ =
-      declare_parameter<double>("relocalization.submap_scan_distance", 0.5);
+  bootstrap_radius_ =
+      declare_parameter<double>("relocalization.bootstrap_radius", 15.0);
+  bootstrap_scan_distance_ =
+      declare_parameter<double>("relocalization.bootstrap_scan_distance", 0.5);
+  bootstrap_max_attempts_per_tick_ = static_cast<size_t>(
+      declare_parameter<int>("relocalization.bootstrap_max_attempts_per_tick", 5));
   prior_session_dir_ =
       declare_parameter<std::string>("relocalization.prior_session_dir", "");
   {
@@ -78,32 +79,23 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   }
 
   if (reloc_enabled_) {
-    if (prior_map_pcd_path_.empty() || !fs::exists(prior_map_pcd_path_)) {
-      RCLCPP_ERROR(this->get_logger(),
-                   "Relocalization enabled but prior_map_pcd is missing: '%s'. Disabling.",
-                   prior_map_pcd_path_.c_str());
-      reloc_enabled_ = false;
-    } else {
+    // prior_map_pcd is optional — used only for publishing a reference cloud
+    // on `/prior_map`. The actual bootstrap relocalization now matches
+    // against `prior_keyframes_` (loaded from prior_session_dir).
+    if (!prior_map_pcd_path_.empty() && fs::exists(prior_map_pcd_path_)) {
       prior_map_cloud_.reset(new pcl::PointCloud<PointType>());
       if (pcl::io::loadPCDFile<PointType>(prior_map_pcd_path_, *prior_map_cloud_) != 0) {
-        RCLCPP_ERROR(this->get_logger(),
-                     "Failed to load prior map PCD: %s. Disabling relocalization.",
-                     prior_map_pcd_path_.c_str());
-        reloc_enabled_   = false;
+        RCLCPP_WARN(this->get_logger(),
+                    "Failed to load prior map PCD: %s. Skipping /prior_map publishing.",
+                    prior_map_pcd_path_.c_str());
         prior_map_cloud_ = nullptr;
       } else {
-        // Pre-voxelize to the relocalization resolution to bound memory and
-        // give performRelocalization a tgt cloud already at the matching
-        // density. The dedicated reloc matcher is configured with the same
-        // `reloc_voxel_res_` so FPFH/solver radii are consistent.
-        const auto &voxelized = voxelize(prior_map_cloud_, reloc_voxel_res_);
+        const auto &voxelized = voxelize(prior_map_cloud_, map_voxel_res_);
         *prior_map_cloud_     = *voxelized;
         RCLCPP_INFO(this->get_logger(),
-                    "Relocalization enabled. Loaded prior map '%s' with %lu points "
-                    "(voxelized at %.2fm).",
+                    "Loaded prior map '%s' with %lu points (visualization only).",
                     prior_map_pcd_path_.c_str(),
-                    prior_map_cloud_->size(),
-                    reloc_voxel_res_);
+                    prior_map_cloud_->size());
       }
     }
   }
@@ -140,9 +132,6 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   }
 
   loop_closure_          = std::make_shared<LoopClosure>(lc_config, this->get_logger());
-  if (reloc_enabled_) {
-    loop_closure_->setupRelocMatcher(reloc_voxel_res_);
-  }
   loop_detection_radius_ = lc_config.loop_detection_radius_;
 
   loop_detector_ = std::make_shared<LoopDetector>(ld_config, this->get_logger());
@@ -152,6 +141,13 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   isam_params_.relinearizeSkip      = 1;
   isam_handler_                     = std::make_shared<gtsam::ISAM2>(isam_params_);
 
+  if (reloc_enabled_ && prior_session_dir_.empty()) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "relocalization.enabled is true but prior_session_dir is empty. "
+                 "Bootstrap reloc now matches against prior_keyframes_ loaded from disk, "
+                 "so prior_session_dir is required. Disabling relocalization.");
+    reloc_enabled_ = false;
+  }
   if (!prior_session_dir_.empty()) {
     if (!reloc_enabled_) {
       RCLCPP_ERROR(this->get_logger(),
@@ -161,9 +157,10 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
       prior_session_dir_.clear();
     } else if (!loadPriorSession()) {
       RCLCPP_ERROR(this->get_logger(),
-                   "loadPriorSession() failed. Continuing without inter-session LC.");
+                   "loadPriorSession() failed. Disabling relocalization.");
       prior_session_dir_.clear();
       prior_keyframes_.clear();
+      reloc_enabled_ = false;
     }
   }
 
@@ -1001,65 +998,78 @@ void PoseGraphManager::saveFlagCallback(const std_msgs::msg::String::ConstShared
 }
 
 bool PoseGraphManager::tryRelocalize() {
-  // Only add a scan to the submap once the robot has moved at least
-  // `reloc_submap_scan_dist_` from the last accumulated pose — this spreads
-  // the submap out geometrically instead of stacking near-duplicate scans
-  // while the robot is stationary or moving slowly.
-  const Eigen::Vector3d current_pos = current_frame_.pose_.block<3, 1>(0, 3);
-  const bool should_accumulate =
-      !reloc_has_last_accum_pose_ ||
-      (current_pos - reloc_last_accum_pose_.block<3, 1>(0, 3)).norm() >= reloc_submap_scan_dist_;
-
-  if (!should_accumulate) {
+  if (prior_keyframes_.empty()) {
+    RCLCPP_ERROR_THROTTLE(this->get_logger(),
+                          *this->get_clock(),
+                          2000,
+                          "Bootstrap reloc requires prior_session_dir "
+                          "(prior_keyframes_ is empty).");
     return false;
   }
 
-  // Scans are stored in the lidar frame; stitch into the current-session odom
-  // frame using the front-end pose before running global registration against
-  // the prior map.
-  reloc_submap_accum_ += transformPcd(current_frame_.scan_, current_frame_.pose_);
-  ++reloc_num_accumulated_;
+  // Throttle by motion: only attempt once per `bootstrap_scan_distance_` of
+  // movement so we don't spam KISS-Matcher with near-duplicate scans while
+  // the robot is stationary.
+  const Eigen::Vector3d current_pos = current_frame_.pose_.block<3, 1>(0, 3);
+  const bool first_try = !reloc_has_last_accum_pose_;
+  const bool moved_enough =
+      first_try ||
+      (current_pos - reloc_last_accum_pose_.block<3, 1>(0, 3)).norm() >= bootstrap_scan_distance_;
+  if (!moved_enough) return false;
   reloc_last_accum_pose_     = current_frame_.pose_;
   reloc_has_last_accum_pose_ = true;
 
-  if (reloc_num_accumulated_ < reloc_num_submap_scans_) {
-    RCLCPP_INFO_THROTTLE(this->get_logger(),
-                         *this->get_clock(),
-                         1000,
-                         "Relocalizing: accumulating scans (%lu / %lu)...",
-                         reloc_num_accumulated_,
-                         reloc_num_submap_scans_);
+  // Build a single-element query vector. Treat `current_frame_.pose_` (new-odom
+  // frame) as if it were already in the prior-map frame — valid only because
+  // the deployment guarantees the two sessions start very close. The radius
+  // filter absorbs the remaining initial misalignment.
+  PoseGraphNode query   = current_frame_;
+  query.pose_corrected_ = current_frame_.pose_;
+  query.idx_            = 0;
+  const std::vector<PoseGraphNode> query_vec = {query};
+
+  const auto candidates = loop_closure_->fetchInterSessionLoopCandidates(
+      query, prior_keyframes_, bootstrap_max_attempts_per_tick_, bootstrap_radius_);
+
+  if (candidates.empty()) {
+    RCLCPP_INFO_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        2000,
+        "Bootstrap reloc: no prior keyframes within %.1fm of current pose. "
+        "Waiting for motion.",
+        bootstrap_radius_);
     return false;
   }
 
   RCLCPP_INFO(this->get_logger(),
-              "Relocalizing: running KISS-Matcher against prior map (%lu pts) with submap (%lu pts)...",
-              prior_map_cloud_->size(),
-              reloc_submap_accum_.size());
+              "Bootstrap reloc: trying %lu prior-keyframe candidates within %.1fm...",
+              candidates.size(),
+              bootstrap_radius_);
 
-  const auto reg = loop_closure_->performRelocalization(reloc_submap_accum_, *prior_map_cloud_);
-
-  reloc_submap_accum_.clear();
-  reloc_num_accumulated_     = 0;
-  reloc_has_last_accum_pose_ = false;
-
-  if (!reg.is_valid_) {
-    RCLCPP_WARN(this->get_logger(),
-                "Relocalization attempt failed (inliers=%lu, overlap=%.1f%%). Retrying...",
+  for (const auto &pair : candidates) {
+    const size_t match_idx     = pair.second;
+    const RegOutput reg        = loop_closure_->performInterSessionLoopClosure(
+        query_vec, prior_keyframes_, 0, match_idx);
+    if (!reg.is_valid_) {
+      RCLCPP_WARN(this->get_logger(),
+                  "  candidate prior=%lu rejected (overlap=%.1f%%).",
+                  match_idx,
+                  reg.overlapness_);
+      continue;
+    }
+    T_priormap_from_newodom_ = reg.pose_;
+    reloc_succeeded_         = true;
+    RCLCPP_INFO(this->get_logger(),
+                "\033[1;32mBootstrap reloc succeeded via prior keyframe %lu "
+                "(inliers=%lu, overlap=%.1f%%). Pose graph will run in the "
+                "prior-map frame.\033[0m",
+                match_idx,
                 reg.num_final_inliers_,
                 reg.overlapness_);
-    return false;
+    return true;
   }
-
-  T_priormap_from_newodom_ = reg.pose_;
-  reloc_succeeded_         = true;
-
-  RCLCPP_INFO(this->get_logger(),
-              "\033[1;32mRelocalization succeeded (inliers=%lu, overlap=%.1f%%). "
-              "Pose graph will run in the prior-map frame.\033[0m",
-              reg.num_final_inliers_,
-              reg.overlapness_);
-  return true;
+  return false;
 }
 
 bool PoseGraphManager::loadPriorSession() {

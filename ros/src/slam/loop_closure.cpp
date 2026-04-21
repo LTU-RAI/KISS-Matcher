@@ -310,86 +310,21 @@ RegOutput LoopClosure::performLoopClosure(const std::vector<PoseGraphNode> &keyf
   }
 }
 
-void LoopClosure::setupRelocMatcher(double voxel_res) {
-  reloc_voxel_res_ = voxel_res;
-  const kiss_matcher::KISSMatcherConfig reloc_cfg(static_cast<float>(voxel_res), false);
-  reloc_global_reg_handler_ = std::make_shared<kiss_matcher::KISSMatcher>(reloc_cfg);
-}
-
-RegOutput LoopClosure::performRelocalization(const pcl::PointCloud<PointType> &src,
-                                             const pcl::PointCloud<PointType> &tgt) {
-  if (!reloc_global_reg_handler_) {
-    RCLCPP_ERROR(logger_,
-                 "Relocalization matcher not initialized. Call setupRelocMatcher() first.");
-    return RegOutput();
-  }
-
-  // Voxelize both clouds to the same reloc resolution so src/tgt densities
-  // match and the FPFH/solver radii (tuned for `reloc_voxel_res_`) are
-  // consistent with the data they operate on.
-  *src_cloud_ = *voxelize(src, reloc_voxel_res_);
-  *tgt_cloud_ = *voxelize(tgt, reloc_voxel_res_);
-
-  RCLCPP_INFO(logger_,
-              "\033[1;35mRelocalization: voxel=%.2fm, # src = %lu, # tgt = %lu\033[0m",
-              reloc_voxel_res_,
-              src_cloud_->size(),
-              tgt_cloud_->size());
-
-  // Inline coarse-to-fine so we can route through the reloc matcher.
-  RegOutput reg_output;
-  coarse_aligned_->clear();
-
-  const auto &src_vec = convertCloudToVec(*src_cloud_);
-  const auto &tgt_vec = convertCloudToVec(*tgt_cloud_);
-
-  const auto &solution = reloc_global_reg_handler_->estimate(src_vec, tgt_vec);
-
-  Eigen::Matrix4d coarse_alignment      = Eigen::Matrix4d::Identity();
-  coarse_alignment.block<3, 3>(0, 0)    = solution.rotation.cast<double>();
-  coarse_alignment.topRightCorner(3, 1) = solution.translation.cast<double>();
-
-  *coarse_aligned_ = transformPcd(*src_cloud_, coarse_alignment);
-
-  const size_t num_inliers      = reloc_global_reg_handler_->getNumFinalInliers();
-  reg_output.num_final_inliers_ = num_inliers;
-
-  if (num_inliers > config_.num_inliers_threshold_) {
-    RCLCPP_INFO(logger_,
-                "\033[1;32mReloc # final inliers: %lu > %lu\033[0m",
-                num_inliers,
-                config_.num_inliers_threshold_);
-  } else {
-    RCLCPP_WARN(logger_,
-                "Reloc # final inliers: %lu < %lu",
-                num_inliers,
-                config_.num_inliers_threshold_);
-  }
-
-  if (!solution.valid || num_inliers < config_.num_inliers_threshold_) {
-    return reg_output;
-  }
-
-  const auto &fine_output = icpAlignment(*coarse_aligned_, *tgt_cloud_);
-  reg_output              = fine_output;
-  reg_output.pose_        = fine_output.pose_ * coarse_alignment;
-  return reg_output;
-}
-
 LoopIdxPairs LoopClosure::fetchInterSessionLoopCandidates(
     const PoseGraphNode &query_frame,
     const std::vector<PoseGraphNode> &prior_keyframes,
-    const size_t num_max_candidates) {
+    const size_t num_max_candidates,
+    const double radius) {
   if (prior_keyframes.empty()) return {};
 
   LoopCandidates candidates;
   candidates.reserve(prior_keyframes.size() / 100);
-  const auto &loop_det_radi = config_.loop_detection_radius_;
+  const double search_radius = (radius > 0.0) ? radius : config_.loop_detection_radius_;
 
   for (size_t idx = 0; idx < prior_keyframes.size(); ++idx) {
     const double dist =
         calculateDistance(prior_keyframes[idx].pose_corrected_, query_frame.pose_corrected_);
-    if (dist < loop_det_radi) {
+    if (dist < search_radius) {
       LoopCandidate c;
       c.idx_      = idx;  // index into the prior_keyframes vector
       c.distance_ = dist;
