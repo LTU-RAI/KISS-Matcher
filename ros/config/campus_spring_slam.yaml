@@ -21,7 +21,7 @@
                                      # already in the odom frame (e.g. fast_lio/cloud_registered).
     voxel_resolution: 0.5 #0.2            # ⭐ [Unit: m] Voxel grid resolution for downsampling
     map_voxel_resolution: 0.5        # Resolution used when building map. Only for visualization
-    save_voxel_resolution: 0.5       # Resolution used when saving voxelized map
+    save_voxel_resolution: 0.4       # Resolution used when saving voxelized map
 
     keyframe:
       keyframe_threshold: 0.5 #1.00        # ⭐ [Unit: m] Distance threshold to add a new keyframe
@@ -65,18 +65,28 @@
       num_inliers_threshold: 32 #50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
     relocalization:
-      enabled: false                    # If true, localize into a previously saved map at startup
-      prior_map_pcd: ""                 # Absolute path to the prior accumulated map PCD
+      enabled: true                    # If true, localize into a previously saved map at startup
+      prior_map_pcd: "/home/niksta/Documents/datasets/campus_winter/campus_winter_map.pcd"                 # Absolute path to the prior accumulated map PCD
       num_submap_scans: 10               # Number of incoming scans to accumulate before each match attempt
       submap_scan_distance: 1.0         # [Unit: m] Minimum base-frame motion before accepting the next scan into the submap
-      voxel_resolution: 1.0             # Voxel resolution for relocalization submap/target downsampling
+      voxel_resolution: 0.5             # Voxel resolution for relocalization submap/target downsampling
+      # Continuous inter-session loop closure. When prior_session_dir is set,
+      # the directory is expected to contain scans/NNNNNN.pcd, poses_tum.txt,
+      # and graph.g2o (as produced by result.save_pose_graph). Prior keyframes
+      # become real nodes in the ISAM2 graph and every new keyframe searches
+      # for inter-session loop closures against them after the one-shot
+      # bootstrap relocalization succeeds.
+      prior_session_dir: "/home/niksta/Documents/datasets/campus_winter"             # Empty disables inter-session LC (legacy one-shot reloc only)
+      prior_session_prefix: "a"         # Single-char GTSAM symbol prefix for prior-session keys
+      new_session_prefix: "b"           # Single-char GTSAM symbol prefix for this run's keys
 
     result:
       save_map_pcd: true
       save_map_bag: false                 # not implemented yet
       save_in_kitti_format: true          # ros2 topic pub -1 /km_sam/save_dir std_msgs/String "data: ''"      
+      save_pose_graph: true               # If true, dump graph.g2o alongside scans+poses (for inter-session LC)
       seq_name: "campus_spring"
-      save_dir: "/home/niksta//Documents/datasets/campus_spring"                        # Absolute directory for saved results.
+      save_dir: "/home/niksta/Documents/datasets"                        # Absolute directory for saved results.
                                           # If empty, falls back to the process's current working directory.
                                           # Used by the shutdown save path and as the default for the
                                           # `save_dir` topic trigger.

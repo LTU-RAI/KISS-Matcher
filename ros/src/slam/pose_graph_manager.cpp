@@ -1068,6 +1068,9 @@ bool PoseGraphManager::loadPriorSession() {
   const fs::path scans_dir  = dir / "scans";
   const fs::path g2o_path   = dir / "graph.g2o";
 
+  RCLCPP_INFO(this->get_logger(),
+              "[prior] Loading prior session from %s", dir.c_str());
+
   if (!fs::exists(poses_path)) {
     RCLCPP_ERROR(this->get_logger(),
                  "prior_session_dir has no poses_tum.txt: %s",
@@ -1081,6 +1084,7 @@ bool PoseGraphManager::loadPriorSession() {
     return false;
   }
 
+  RCLCPP_INFO(this->get_logger(), "[prior] Parsing poses_tum.txt ...");
   std::ifstream pf(poses_path);
   std::string line;
   std::vector<std::pair<double, Eigen::Matrix4d>> tum_poses;
@@ -1102,9 +1106,12 @@ bool PoseGraphManager::loadPriorSession() {
     RCLCPP_ERROR(this->get_logger(), "poses_tum.txt is empty: %s", poses_path.c_str());
     return false;
   }
+  RCLCPP_INFO(this->get_logger(),
+              "[prior] Parsed %lu poses. Loading scans ...", tum_poses.size());
 
   prior_keyframes_.clear();
   prior_keyframes_.reserve(tum_poses.size());
+  const size_t log_every = std::max<size_t>(1, tum_poses.size() / 10);
   for (size_t i = 0; i < tum_poses.size(); ++i) {
     std::stringstream scan_ss;
     scan_ss << scans_dir.string() << "/" << std::setw(6) << std::setfill('0') << i << ".pcd";
@@ -1125,6 +1132,11 @@ bool PoseGraphManager::loadPriorSession() {
     node.nnsearch_processed_      = true;
     node.loop_detector_processed_ = true;
     prior_keyframes_.push_back(std::move(node));
+
+    if ((i + 1) % log_every == 0 || i + 1 == tum_poses.size()) {
+      RCLCPP_INFO(this->get_logger(),
+                  "[prior]   scans loaded: %lu / %lu", i + 1, tum_poses.size());
+    }
   }
   if (prior_keyframes_.empty()) {
     RCLCPP_ERROR(this->get_logger(),
@@ -1140,8 +1152,13 @@ bool PoseGraphManager::loadPriorSession() {
   gtsam::Values prior_values;
   bool loaded_g2o = false;
   if (fs::exists(g2o_path)) {
+    RCLCPP_INFO(this->get_logger(),
+                "[prior] Loading g2o graph from %s ...", g2o_path.c_str());
     try {
       auto parsed = gtsam::readG2o(g2o_path.string(), true /* is3D */);
+      RCLCPP_INFO(this->get_logger(),
+                  "[prior]   readG2o returned %lu factors, %lu values. Re-keying ...",
+                  parsed.first->size(), parsed.second->size());
       // Re-key into prior_session_prefix_ namespace using the saved keys' indices.
       // readG2o returns keys that may themselves be Symbols (when the writer
       // used Symbol keys) — gtsam::Symbol handles a plain integer key as
@@ -1173,9 +1190,25 @@ bool PoseGraphManager::loadPriorSession() {
               pf2->noiseModel()));
         }
       }
+      // writeG2o does not serialize PriorFactor, so the deserialized graph
+      // has no anchor and is gauge-free (6-DoF). Re-add a tight prior on the
+      // first prior-session node so ISAM2 can linearize without hitting an
+      // indeterminant linear system.
+      const gtsam::Symbol sym0(prior_session_prefix_, 0);
+      if (prior_values.exists(sym0)) {
+        auto anchor_variance =
+            (gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished();
+        auto anchor_noise = gtsam::noiseModel::Diagonal::Variances(anchor_variance);
+        prior_graph.add(gtsam::PriorFactor<gtsam::Pose3>(
+            sym0, prior_values.at<gtsam::Pose3>(sym0), anchor_noise));
+        RCLCPP_INFO(this->get_logger(),
+                    "[prior]   Added anchor PriorFactor on %c0",
+                    prior_session_prefix_);
+      }
+
       loaded_g2o = true;
       RCLCPP_INFO(this->get_logger(),
-                  "Loaded prior graph from %s (%lu factors, %lu values)",
+                  "[prior] Loaded prior graph from %s (%lu factors, %lu values)",
                   g2o_path.c_str(), prior_graph.size(), prior_values.size());
     } catch (const std::exception &e) {
       RCLCPP_WARN(this->get_logger(),
@@ -1215,19 +1248,23 @@ bool PoseGraphManager::loadPriorSession() {
   // Merge into persistent graph so a subsequent save round-trips prior + new
   // as a single combined session, and seed ISAM2 with the prior values so
   // inter-session BetweenFactors can attach.
+  RCLCPP_INFO(this->get_logger(),
+              "[prior] Seeding ISAM2 with %lu factors and %lu values ...",
+              prior_graph.size(), prior_values.size());
   persistent_graph_ += prior_graph;
   {
     std::lock_guard<std::mutex> lock(graph_mutex_);
     isam_handler_->update(prior_graph, prior_values);
     isam_handler_->update();
   }
+  RCLCPP_INFO(this->get_logger(), "[prior] ISAM2 initial update OK. Calculating estimate ...");
   {
     std::lock_guard<std::mutex> lock(realtime_pose_mutex_);
     corrected_esti_ = isam_handler_->calculateEstimate();
   }
 
   RCLCPP_INFO(this->get_logger(),
-              "Prior session incorporated into ISAM2 (prefix '%c').",
+              "[prior] Prior session incorporated into ISAM2 (prefix '%c').",
               prior_session_prefix_);
   return true;
 }
