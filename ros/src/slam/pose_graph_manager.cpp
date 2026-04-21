@@ -58,8 +58,38 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
       declare_parameter<double>("relocalization.bootstrap_radius", 15.0);
   bootstrap_scan_distance_ =
       declare_parameter<double>("relocalization.bootstrap_scan_distance", 0.5);
+  bootstrap_submap_scans_ = static_cast<size_t>(
+      declare_parameter<int>("relocalization.bootstrap_submap_scans", 5));
   bootstrap_max_attempts_per_tick_ = static_cast<size_t>(
       declare_parameter<int>("relocalization.bootstrap_max_attempts_per_tick", 5));
+  bootstrap_voxel_resolution_ = declare_parameter<double>(
+      "relocalization.bootstrap_voxel_resolution", -1.0);
+  {
+    const std::vector<double> identity16 = {
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0};
+    const auto t_init_vec = declare_parameter<std::vector<double>>(
+        "relocalization.bootstrap_T_init", identity16);
+    if (t_init_vec.size() != 16) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "relocalization.bootstrap_T_init must be 16 doubles "
+                   "(row-major 4x4), got %lu. Using identity.",
+                   t_init_vec.size());
+    } else {
+      for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c)
+          bootstrap_T_init_(r, c) = t_init_vec[r * 4 + c];
+      if (!bootstrap_T_init_.isApprox(Eigen::Matrix4d::Identity())) {
+        const Eigen::Vector3d t = bootstrap_T_init_.block<3, 1>(0, 3);
+        RCLCPP_INFO(this->get_logger(),
+                    "Bootstrap T_init: translation = (%.3f, %.3f, %.3f) "
+                    "(applied to query pose before reloc).",
+                    t.x(), t.y(), t.z());
+      }
+    }
+  }
   prior_session_dir_ =
       declare_parameter<std::string>("relocalization.prior_session_dir", "");
   {
@@ -1007,9 +1037,9 @@ bool PoseGraphManager::tryRelocalize() {
     return false;
   }
 
-  // Throttle by motion: only attempt once per `bootstrap_scan_distance_` of
-  // movement so we don't spam KISS-Matcher with near-duplicate scans while
-  // the robot is stationary.
+  // Throttle by motion: only push a new scan into the query-side buffer once
+  // per `bootstrap_scan_distance_` of movement so buffered scans are spatially
+  // distributed rather than piled up while the robot is stationary.
   const Eigen::Vector3d current_pos = current_frame_.pose_.block<3, 1>(0, 3);
   const bool first_try = !reloc_has_last_accum_pose_;
   const bool moved_enough =
@@ -1019,14 +1049,24 @@ bool PoseGraphManager::tryRelocalize() {
   reloc_last_accum_pose_     = current_frame_.pose_;
   reloc_has_last_accum_pose_ = true;
 
-  // Build a single-element query vector. Treat `current_frame_.pose_` (new-odom
-  // frame) as if it were already in the prior-map frame — valid only because
-  // the deployment guarantees the two sessions start very close. The radius
-  // filter absorbs the remaining initial misalignment.
-  PoseGraphNode query   = current_frame_;
-  query.pose_corrected_ = current_frame_.pose_;
-  query.idx_            = 0;
-  const std::vector<PoseGraphNode> query_vec = {query};
+  // Push current scan into the query-side ring buffer. pose_corrected_ is
+  // the new-odom pose pre-multiplied by `bootstrap_T_init_` so the query
+  // lives in (an approximation of) the prior-map frame. Radius filtering +
+  // KISS-Matcher absorb the remaining residual misalignment.
+  PoseGraphNode buffered   = current_frame_;
+  buffered.pose_corrected_ = bootstrap_T_init_ * current_frame_.pose_;
+  reloc_scan_buffer_.push_back(std::move(buffered));
+  while (reloc_scan_buffer_.size() > bootstrap_submap_scans_) {
+    reloc_scan_buffer_.pop_front();
+  }
+
+  // Copy the deque into a contiguous vector for performInterSessionLoopClosure.
+  // The last element is the "center" of the query submap (all preceding
+  // scans are folded in by accumulateSubmap's start = center - submap_range).
+  const std::vector<PoseGraphNode> query_vec(reloc_scan_buffer_.begin(),
+                                             reloc_scan_buffer_.end());
+  const size_t query_center_idx = query_vec.size() - 1;
+  const PoseGraphNode &query    = query_vec[query_center_idx];
 
   const auto candidates = loop_closure_->fetchInterSessionLoopCandidates(
       query, prior_keyframes_, bootstrap_max_attempts_per_tick_, bootstrap_radius_);
@@ -1042,15 +1082,39 @@ bool PoseGraphManager::tryRelocalize() {
     return false;
   }
 
+  const Eigen::Vector3d qpos = query.pose_corrected_.block<3, 1>(0, 3);
   RCLCPP_INFO(this->get_logger(),
-              "Bootstrap reloc: trying %lu prior-keyframe candidates within %.1fm...",
+              "Bootstrap reloc: query @ (%.2f, %.2f, %.2f), buffer=%lu, "
+              "trying %lu candidates within %.1fm:",
+              qpos.x(), qpos.y(), qpos.z(),
+              query_vec.size(),
               candidates.size(),
               bootstrap_radius_);
+  for (const auto &pair : candidates) {
+    const size_t m             = pair.second;
+    const Eigen::Vector3d ppos = prior_keyframes_[m].pose_corrected_.block<3, 1>(0, 3);
+    const double dxy           = (ppos.head<2>() - qpos.head<2>()).norm();
+    RCLCPP_INFO(this->get_logger(),
+                "  prior[%lu] @ (%.2f, %.2f, %.2f)  dXY=%.2fm",
+                m, ppos.x(), ppos.y(), ppos.z(), dxy);
+  }
 
   for (const auto &pair : candidates) {
-    const size_t match_idx     = pair.second;
-    const RegOutput reg        = loop_closure_->performInterSessionLoopClosure(
-        query_vec, prior_keyframes_, 0, match_idx);
+    const size_t match_idx = pair.second;
+    const RegOutput reg    = loop_closure_->performInterSessionLoopClosure(
+        query_vec, prior_keyframes_, query_center_idx, match_idx,
+        bootstrap_voxel_resolution_);
+
+    // Publish the submaps KISS-Matcher was actually fed, so we can see them in
+    // RViz even when bootstrap is failing (the normal /lc/* pubs only fire on
+    // successful LCs). Frame is the prior-map frame since each scan was already
+    // transformed by its pose_corrected_ inside performInterSessionLoopClosure.
+    const auto stamp = this->now();
+    debug_src_pub_->publish(toROSMsg(loop_closure_->getSourceCloud(), map_frame_, stamp));
+    debug_tgt_pub_->publish(toROSMsg(loop_closure_->getTargetCloud(), map_frame_, stamp));
+    debug_coarse_aligned_pub_->publish(
+        toROSMsg(loop_closure_->getCoarseAlignedCloud(), map_frame_, stamp));
+
     if (!reg.is_valid_) {
       RCLCPP_WARN(this->get_logger(),
                   "  candidate prior=%lu rejected (overlap=%.1f%%).",
@@ -1058,8 +1122,12 @@ bool PoseGraphManager::tryRelocalize() {
                   reg.overlapness_);
       continue;
     }
-    T_priormap_from_newodom_ = reg.pose_;
+    // reg.pose_ aligns the pre-transformed query (bootstrap_T_init_ * new-odom)
+    // into the prior frame, so compose to recover the raw new-odom -> prior
+    // transform.
+    T_priormap_from_newodom_ = reg.pose_ * bootstrap_T_init_;
     reloc_succeeded_         = true;
+    reloc_scan_buffer_.clear();
     RCLCPP_INFO(this->get_logger(),
                 "\033[1;32mBootstrap reloc succeeded via prior keyframe %lu "
                 "(inliers=%lu, overlap=%.1f%%). Pose graph will run in the "

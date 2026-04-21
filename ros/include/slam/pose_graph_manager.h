@@ -212,9 +212,24 @@ class PoseGraphManager : public rclcpp::Node {
   // Radius-based inter-session bootstrap parameters.
   double bootstrap_radius_           = 15.0;
   double bootstrap_scan_distance_    = 0.5;
+  size_t bootstrap_submap_scans_     = 5;
   size_t bootstrap_max_attempts_per_tick_ = 5;
+  // Pre-voxelize resolution used for BOTH submaps during bootstrap reloc only.
+  // <= 0 means "fall back to the global voxel_resolution". Useful when the
+  // steady-state voxel size is too coarse (few FPFH features) to recover an
+  // initial alignment between sessions.
+  double bootstrap_voxel_resolution_ = -1.0;
+  // Known offset from new-odom frame to prior-map frame. Pre-applied to the
+  // query pose before candidate search + registration so KISS-Matcher only has
+  // to solve the residual misalignment. Final T_priormap_from_newodom_ is
+  // reg.pose_ * bootstrap_T_init_. Identity = no prior knowledge.
+  Eigen::Matrix4d bootstrap_T_init_ = Eigen::Matrix4d::Identity();
   Eigen::Matrix4d reloc_last_accum_pose_ = Eigen::Matrix4d::Identity();
   bool reloc_has_last_accum_pose_        = false;
+  // Ring buffer of recent new-session scans (already transformed poses in
+  // new-odom frame) used as the query-side submap during bootstrap so we
+  // match submap-to-submap against prior_keyframes_.
+  std::deque<kiss_matcher::PoseGraphNode> reloc_scan_buffer_;
   // Loaded from `relocalization.prior_map_pcd` solely for publishing on
   // /prior_map. Actual bootstrap alignment now matches against prior_keyframes_.
   pcl::PointCloud<PointType>::Ptr prior_map_cloud_;

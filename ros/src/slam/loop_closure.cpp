@@ -351,7 +351,8 @@ RegOutput LoopClosure::performInterSessionLoopClosure(
     const std::vector<PoseGraphNode> &query_keyframes,
     const std::vector<PoseGraphNode> &match_keyframes,
     const size_t query_idx,
-    const size_t match_idx) {
+    const size_t match_idx,
+    const double voxel_res_override) {
   RegOutput reg_output;
   if (query_idx >= query_keyframes.size() || match_idx >= match_keyframes.size()) {
     return reg_output;
@@ -390,8 +391,10 @@ RegOutput LoopClosure::performInterSessionLoopClosure(
     }
   }
 
-  const pcl::PointCloud<PointType> src_voxelized = *voxelize(src_accum, config_.voxel_res_);
-  const pcl::PointCloud<PointType> tgt_voxelized = *voxelize(tgt_accum, config_.voxel_res_);
+  const double effective_voxel_res =
+      (voxel_res_override > 0.0) ? voxel_res_override : config_.voxel_res_;
+  const pcl::PointCloud<PointType> src_voxelized = *voxelize(src_accum, effective_voxel_res);
+  const pcl::PointCloud<PointType> tgt_voxelized = *voxelize(tgt_accum, effective_voxel_res);
 
   *src_cloud_ = src_voxelized;
   *tgt_cloud_ = tgt_voxelized;

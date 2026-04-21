@@ -80,8 +80,23 @@
       # prior keyframes within `bootstrap_radius` using KISS-Matcher + VGICP.
       bootstrap_radius: 15.0              # [Unit: m] Radius for prior-keyframe search during bootstrap.
                                           # Must exceed the expected initial-alignment error.
-      bootstrap_scan_distance: 0.5        # [Unit: m] Throttle: only attempt once per this much motion.
+      bootstrap_scan_distance: 0.5        # [Unit: m] Throttle: push a new scan into the query buffer
+                                          # only after this much motion.
+      bootstrap_submap_scans: 5           # Size of the query-side ring buffer. Scans are matched
+                                          # submap-to-submap against prior_keyframes_ (which
+                                          # contributes num_submap_keyframes on the target side).
       bootstrap_max_attempts_per_tick: 5  # Prior candidates tried per invocation.
+      bootstrap_voxel_resolution: -1.0    # [Unit: m] Pre-voxelize resolution applied to BOTH
+                                          # src and tgt submaps during bootstrap reloc only.
+                                          # <= 0 reuses the global `voxel_resolution`.
+      # Known 4x4 transform (row-major) from the new-odom frame to the prior-map
+      # frame. Pre-applied to the query pose before candidate search so
+      # KISS-Matcher only has to solve the residual misalignment. Default is
+      # identity (no prior knowledge).
+      bootstrap_T_init: [1.0, 0.0, 0.0, 0.0,
+                         0.0, 1.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0, 0.0,
+                         0.0, 0.0, 0.0, 1.0]
 
     result:
       save_map_pcd: true

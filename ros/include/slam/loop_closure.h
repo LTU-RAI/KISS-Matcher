@@ -135,11 +135,15 @@ class LoopClosure {
   // runs the same coarse-to-fine (or GICP-only) alignment as intra-session
   // loop closure. Returns a RegOutput; the caller is responsible for adding
   // a cross-prefix BetweenFactor on success.
+  // `voxel_res_override` > 0 pre-voxelizes both submaps at a custom resolution
+  // instead of `config_.voxel_res_` — used by bootstrap reloc when FPFH needs
+  // a different density than steady-state loop closure.
   RegOutput performInterSessionLoopClosure(
       const std::vector<PoseGraphNode> &query_keyframes,
       const std::vector<PoseGraphNode> &match_keyframes,
       const size_t query_idx,
-      const size_t match_idx);
+      const size_t match_idx,
+      const double voxel_res_override = -1.0);
 
   pcl::PointCloud<PointType> getSourceCloud();
   pcl::PointCloud<PointType> getTargetCloud();
