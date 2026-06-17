@@ -233,17 +233,26 @@ PoseGraphManager::~PoseGraphManager() {
   }
   if (save_map_pcd_) {
     pcl::PointCloud<PointType>::Ptr corrected_map(new pcl::PointCloud<PointType>());
-    corrected_map->reserve(keyframes_[0].scan_.size() * keyframes_.size());
-
     {
       std::lock_guard<std::mutex> lock(keyframes_mutex_);
+      if (keyframes_.empty()) {
+        RCLCPP_WARN(this->get_logger(), "No keyframes recorded; skipping destructor save.");
+        return;
+      }
+      corrected_map->reserve(keyframes_[0].scan_.size() * keyframes_.size());
       for (size_t i = 0; i < keyframes_.size(); ++i) {
         *corrected_map += transformPcd(keyframes_[i].scan_, keyframes_[i].pose_corrected_);
       }
     }
     const auto &voxelized_map = voxelize(corrected_map, save_voxel_res_);
-    pcl::io::savePCDFileASCII<PointType>(package_path_ + "/result.pcd", *voxelized_map);
-    RCLCPP_INFO(this->get_logger(), "Result saved in .pcd format (Destructor).");
+    try {
+      fs::create_directories(package_path_);
+      const std::string out_path = package_path_ + "/result.pcd";
+      pcl::io::savePCDFileASCII<PointType>(out_path, *voxelized_map);
+      RCLCPP_INFO(this->get_logger(), "Result saved to %s (Destructor).", out_path.c_str());
+    } catch (const std::exception &e) {
+      RCLCPP_ERROR(this->get_logger(), "Failed to save result.pcd: %s", e.what());
+    }
   }
 }
 
@@ -779,18 +788,26 @@ void PoseGraphManager::saveFlagCallback(const std_msgs::msg::String::ConstShared
   }
   if (save_map_pcd_) {
     pcl::PointCloud<PointType>::Ptr corrected_map(new pcl::PointCloud<PointType>());
-    corrected_map->reserve(keyframes_[0].scan_.size() * keyframes_.size());
-
     {
       std::lock_guard<std::mutex> lock(keyframes_mutex_);
+      if (keyframes_.empty()) {
+        RCLCPP_WARN(this->get_logger(), "No keyframes recorded; nothing to save.");
+        return;
+      }
+      corrected_map->reserve(keyframes_[0].scan_.size() * keyframes_.size());
       for (size_t i = 0; i < keyframes_.size(); ++i) {
         *corrected_map += transformPcd(keyframes_[i].scan_, keyframes_[i].pose_corrected_);
       }
     }
     const auto &voxelized_map = voxelize(corrected_map, save_voxel_res_);
-    pcl::io::savePCDFileASCII<PointType>(seq_directory + "/" + seq_name_ + "_map.pcd",
-                                         *voxelized_map);
-    RCLCPP_INFO(this->get_logger(), "Accumulated map cloud saved in .pcd format");
+    try {
+      fs::create_directories(seq_directory);
+      const std::string out_path = seq_directory + "/" + seq_name_ + "_map.pcd";
+      pcl::io::savePCDFileASCII<PointType>(out_path, *voxelized_map);
+      RCLCPP_INFO(this->get_logger(), "Accumulated map saved to %s", out_path.c_str());
+    } catch (const std::exception &e) {
+      RCLCPP_ERROR(this->get_logger(), "Failed to save accumulated map: %s", e.what());
+    }
   }
 }
 
