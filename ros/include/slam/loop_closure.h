@@ -62,8 +62,6 @@ class LoopClosure {
  private:
   // For coarse-to-fine alignment
   std::shared_ptr<kiss_matcher::KISSMatcher> global_reg_handler_                        = nullptr;
-  std::shared_ptr<kiss_matcher::KISSMatcher> reloc_global_reg_handler_                  = nullptr;
-  double reloc_voxel_res_                                                               = 0.0;
   std::shared_ptr<small_gicp::RegistrationPCL<PointType, PointType>> local_reg_handler_ = nullptr;
 
   pcl::PointCloud<PointType>::Ptr src_cloud_;
@@ -109,8 +107,11 @@ class LoopClosure {
   RegOutput icpAlignment(const pcl::PointCloud<PointType> &src,
                          const pcl::PointCloud<PointType> &tgt);
 
+  // `num_inliers_threshold_override` >= 0 overrides config_.num_inliers_threshold_
+  // for this call only (used by bootstrap reloc when a looser threshold is needed).
   RegOutput coarseToFineAlignment(const pcl::PointCloud<PointType> &src,
-                                  const pcl::PointCloud<PointType> &tgt);
+                                  const pcl::PointCloud<PointType> &tgt,
+                                  const int num_inliers_threshold_override = -1);
 
   RegOutput performLoopClosure(const PoseGraphNode &query_keyframe,
                                const std::vector<PoseGraphNode> &keyframes);
@@ -119,20 +120,37 @@ class LoopClosure {
                                const size_t query_idx,
                                const size_t match_idx);
 
-  // Build (or rebuild) a dedicated KISS-Matcher instance configured at
-  // `voxel_res` for relocalization. This needs to be called once before
-  // `performRelocalization` so the matcher's FPFH/solver radii match the
-  // resolution at which the submap and prior map are downsampled.
-  void setupRelocMatcher(double voxel_res);
+  // Inter-session candidate selection: radius-filter `prior_keyframes` against
+  // `query_frame.pose_corrected_` only (no time-diff check — prior timestamps
+  // are from a previous run and not comparable). Returns up to
+  // `num_max_candidates` pairs where `first` is the query's own idx_ and
+  // `second` is the prior-keyframe index in the input vector. Pass a positive
+  // `radius` to override `config_.loop_detection_radius_` (used by bootstrap
+  // reloc where a larger search radius is needed).
+  LoopIdxPairs fetchInterSessionLoopCandidates(
+      const PoseGraphNode &query_frame,
+      const std::vector<PoseGraphNode> &prior_keyframes,
+      const size_t num_max_candidates = 3,
+      const double radius             = -1.0);
 
-  // One-shot global registration of `src` into `tgt` using the same
-  // coarse-to-fine path as loop closure, but with the dedicated reloc-scale
-  // matcher. Both clouds are voxelized to the reloc resolution first so they
-  // share the same effective density. Stores the clouds for visualization via
-  // the existing `lc/src`, `lc/tgt`, `lc/coarse_alignment`, `lc/fine_alignment`
-  // topics.
-  RegOutput performRelocalization(const pcl::PointCloud<PointType> &src,
-                                  const pcl::PointCloud<PointType> &tgt);
+  // Inter-session registration: stitches a submap from `query_keyframes`
+  // around `query_idx` and from `match_keyframes` around `match_idx`, then
+  // runs the same coarse-to-fine (or GICP-only) alignment as intra-session
+  // loop closure. Returns a RegOutput; the caller is responsible for adding
+  // a cross-prefix BetweenFactor on success.
+  // `voxel_res_override` > 0 pre-voxelizes both submaps at a custom resolution
+  // instead of `config_.voxel_res_` — used by bootstrap reloc when FPFH needs
+  // a different density than steady-state loop closure.
+  // `num_inliers_threshold_override` >= 0 overrides
+  // `config_.num_inliers_threshold_` for the coarse stage (bootstrap reloc
+  // often needs a looser threshold than steady-state LCs).
+  RegOutput performInterSessionLoopClosure(
+      const std::vector<PoseGraphNode> &query_keyframes,
+      const std::vector<PoseGraphNode> &match_keyframes,
+      const size_t query_idx,
+      const size_t match_idx,
+      const double voxel_res_override            = -1.0,
+      const int num_inliers_threshold_override   = -1);
 
   pcl::PointCloud<PointType> getSourceCloud();
   pcl::PointCloud<PointType> getTargetCloud();

@@ -1,0 +1,65 @@
+---
+launch:
+  # In arg, all the default value should be string
+  - arg: {name: start_rviz,  default: "false"}
+  - arg: {name: namespace,  default: "husky", description: robot namespace; frames/topics derive from it}
+  - arg: {name: use_sim_time, default: "false", description: "Set true when replaying a bag so TF stamps share the sim clock with Fast-LIO"}
+
+  - arg: {name: rviz_path,  default: $(find-pkg-share kiss_matcher_ros)/rviz/kiss_matcher_sam.rviz}
+  - arg: {name: config_path,   default: $(find-pkg-share kiss_matcher_ros)/config/husky_slam.yaml}
+
+  # Namespaced to match spark-fast-lio: <ns>/map -> <ns>/odom -> <ns>/base_link.
+  - arg: {name: map_frame , default: '$(var namespace)/map' , description: "Global (loop-closure corrected) frame"}
+  - arg: {name: odom_frame, default: '$(var namespace)/odom', description: "Fast-LIO odometry frame (child of map)"}
+  - arg: {name: base_frame, default: '$(var namespace)/base_link', description: "Robot's base frame (kept for compatibility)"}
+
+  # Absolute topics: namespace does NOT auto-prefix these, so they name the ns explicitly.
+  - arg: {name: odom_topic, default: "/$(var namespace)/odometry"}
+  - arg: {name: scan_topic, default: "/$(var namespace)/fast_lio/cloud_registered"}
+
+  - node:
+      namespace: $(var namespace)
+      pkg: kiss_matcher_ros
+      exec: kiss_matcher_sam
+      name: kiss_matcher_sam
+      sigterm_timeout: 60.0
+      sigkill_timeout: 60.0
+      output: screen
+      on_exit: shutdown
+
+      remap:
+        # Keep the map->odom correction on the per-robot tree (/<ns>/tf), like Fast-LIO.
+        - { from: '/tf', to: 'tf' }
+        - { from: '/tf_static', to: 'tf_static' }
+        # Subscriber topics
+        - { from: '/cloud', to: $(var scan_topic) }
+        - { from: '/odom',   to: $(var odom_topic) }
+
+      param:
+        - name: "use_sim_time"
+          value: $(var use_sim_time)
+        - name: "map_frame"
+          value: "$(var map_frame)"
+        - name: "odom_frame"
+          value: "$(var odom_frame)"
+        - name: "base_frame"
+          value: "$(var base_frame)"
+
+        - from: $(var config_path)
+
+  - node:
+      if: $(var start_rviz)
+      namespace: $(var namespace)
+      pkg: rviz2
+      exec: rviz2
+      name: km_sam_rviz
+      launch-prefix: nice
+      output: screen
+      remap:
+        - { from: '/tf', to: 'tf' }
+        - { from: '/tf_static', to: 'tf_static' }
+      param:
+        - name: "use_sim_time"
+          value: $(var use_sim_time)
+      args: >
+        -d $(var rviz_path)

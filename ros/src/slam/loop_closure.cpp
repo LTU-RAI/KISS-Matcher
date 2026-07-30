@@ -223,7 +223,8 @@ RegOutput LoopClosure::icpAlignment(const pcl::PointCloud<PointType> &src,
 }
 
 RegOutput LoopClosure::coarseToFineAlignment(const pcl::PointCloud<PointType> &src,
-                                             const pcl::PointCloud<PointType> &tgt) {
+                                             const pcl::PointCloud<PointType> &tgt,
+                                             const int num_inliers_threshold_override) {
   RegOutput reg_output;
   coarse_aligned_->clear();
 
@@ -240,21 +241,25 @@ RegOutput LoopClosure::coarseToFineAlignment(const pcl::PointCloud<PointType> &s
 
   const size_t num_inliers      = global_reg_handler_->getNumFinalInliers();
   reg_output.num_final_inliers_ = num_inliers;
+  const size_t effective_inliers_threshold =
+      (num_inliers_threshold_override >= 0)
+          ? static_cast<size_t>(num_inliers_threshold_override)
+          : config_.num_inliers_threshold_;
   if (config_.verbose_) {
-    if (num_inliers > config_.num_inliers_threshold_) {
+    if (num_inliers > effective_inliers_threshold) {
       RCLCPP_INFO(logger_,
                   "\033[1;32m# final inliers: %lu > %lu\033[0m",
                   num_inliers,
-                  config_.num_inliers_threshold_);
+                  effective_inliers_threshold);
     } else {
       RCLCPP_WARN(
-          logger_, "# final inliers: %lu < %lu", num_inliers, config_.num_inliers_threshold_);
+          logger_, "# final inliers: %lu < %lu", num_inliers, effective_inliers_threshold);
     }
   }
 
   // NOTE(hlim): A small number of inliers suggests that the initial alignment may have failed,
   // so fine alignment is meaningless.
-  if (!solution.valid || num_inliers < config_.num_inliers_threshold_) {
+  if (!solution.valid || num_inliers < effective_inliers_threshold) {
     return reg_output;
   } else {
     const auto &fine_output = icpAlignment(*coarse_aligned_, tgt);
@@ -310,70 +315,110 @@ RegOutput LoopClosure::performLoopClosure(const std::vector<PoseGraphNode> &keyf
   }
 }
 
-void LoopClosure::setupRelocMatcher(double voxel_res) {
-  reloc_voxel_res_ = voxel_res;
-  const kiss_matcher::KISSMatcherConfig reloc_cfg(static_cast<float>(voxel_res), false);
-  reloc_global_reg_handler_ = std::make_shared<kiss_matcher::KISSMatcher>(reloc_cfg);
+LoopIdxPairs LoopClosure::fetchInterSessionLoopCandidates(
+    const PoseGraphNode &query_frame,
+    const std::vector<PoseGraphNode> &prior_keyframes,
+    const size_t num_max_candidates,
+    const double radius) {
+  if (prior_keyframes.empty()) return {};
+
+  LoopCandidates candidates;
+  candidates.reserve(prior_keyframes.size() / 100);
+  const double search_radius = (radius > 0.0) ? radius : config_.loop_detection_radius_;
+
+  for (size_t idx = 0; idx < prior_keyframes.size(); ++idx) {
+    const double dist =
+        calculateDistance(prior_keyframes[idx].pose_corrected_, query_frame.pose_corrected_);
+    if (dist < search_radius) {
+      LoopCandidate c;
+      c.idx_      = idx;  // index into the prior_keyframes vector
+      c.distance_ = dist;
+      c.found_    = true;
+      candidates.emplace_back(c);
+    }
+  }
+  if (candidates.empty()) return {};
+
+  std::sort(candidates.begin(), candidates.end(),
+            [](const LoopCandidate &a, const LoopCandidate &b) {
+              return a.distance_ < b.distance_;
+            });
+
+  LoopIdxPairs idx_pairs;
+  const size_t num_selected = std::min(num_max_candidates, candidates.size());
+  for (size_t i = 0; i < num_selected; ++i) {
+    idx_pairs.emplace_back(query_frame.idx_, candidates[i].idx_);
+  }
+  return idx_pairs;
 }
 
-RegOutput LoopClosure::performRelocalization(const pcl::PointCloud<PointType> &src,
-                                             const pcl::PointCloud<PointType> &tgt) {
-  if (!reloc_global_reg_handler_) {
-    RCLCPP_ERROR(logger_,
-                 "Relocalization matcher not initialized. Call setupRelocMatcher() first.");
-    return RegOutput();
-  }
-
-  // Voxelize both clouds to the same reloc resolution so src/tgt densities
-  // match and the FPFH/solver radii (tuned for `reloc_voxel_res_`) are
-  // consistent with the data they operate on.
-  *src_cloud_ = *voxelize(src, reloc_voxel_res_);
-  *tgt_cloud_ = *voxelize(tgt, reloc_voxel_res_);
-
-  RCLCPP_INFO(logger_,
-              "\033[1;35mRelocalization: voxel=%.2fm, # src = %lu, # tgt = %lu\033[0m",
-              reloc_voxel_res_,
-              src_cloud_->size(),
-              tgt_cloud_->size());
-
-  // Inline coarse-to-fine so we can route through the reloc matcher.
+RegOutput LoopClosure::performInterSessionLoopClosure(
+    const std::vector<PoseGraphNode> &query_keyframes,
+    const std::vector<PoseGraphNode> &match_keyframes,
+    const size_t query_idx,
+    const size_t match_idx,
+    const double voxel_res_override,
+    const int num_inliers_threshold_override) {
   RegOutput reg_output;
-  coarse_aligned_->clear();
-
-  const auto &src_vec = convertCloudToVec(*src_cloud_);
-  const auto &tgt_vec = convertCloudToVec(*tgt_cloud_);
-
-  const auto &solution = reloc_global_reg_handler_->estimate(src_vec, tgt_vec);
-
-  Eigen::Matrix4d coarse_alignment      = Eigen::Matrix4d::Identity();
-  coarse_alignment.block<3, 3>(0, 0)    = solution.rotation.cast<double>();
-  coarse_alignment.topRightCorner(3, 1) = solution.translation.cast<double>();
-
-  *coarse_aligned_ = transformPcd(*src_cloud_, coarse_alignment);
-
-  const size_t num_inliers      = reloc_global_reg_handler_->getNumFinalInliers();
-  reg_output.num_final_inliers_ = num_inliers;
-
-  if (num_inliers > config_.num_inliers_threshold_) {
-    RCLCPP_INFO(logger_,
-                "\033[1;32mReloc # final inliers: %lu > %lu\033[0m",
-                num_inliers,
-                config_.num_inliers_threshold_);
-  } else {
-    RCLCPP_WARN(logger_,
-                "Reloc # final inliers: %lu < %lu",
-                num_inliers,
-                config_.num_inliers_threshold_);
-  }
-
-  if (!solution.valid || num_inliers < config_.num_inliers_threshold_) {
+  if (query_idx >= query_keyframes.size() || match_idx >= match_keyframes.size()) {
     return reg_output;
   }
 
-  const auto &fine_output = icpAlignment(*coarse_aligned_, *tgt_cloud_);
-  reg_output              = fine_output;
-  reg_output.pose_        = fine_output.pose_ * coarse_alignment;
-  return reg_output;
+  const size_t num_submap_keyframes = config_.num_submap_keyframes_;
+  const size_t submap_range         = num_submap_keyframes / 2;
+  const size_t num_approx = query_keyframes[query_idx].scan_.size() * num_submap_keyframes;
+
+  pcl::PointCloud<PointType> src_accum, tgt_accum;
+  src_accum.reserve(num_approx);
+  tgt_accum.reserve(num_approx);
+
+  auto accumulateSubmap = [&](const std::vector<PoseGraphNode> &src,
+                              size_t center_idx,
+                              pcl::PointCloud<PointType> &accum) {
+    const size_t start = (center_idx < submap_range) ? 0 : center_idx - submap_range;
+    const size_t end   = std::min(center_idx + submap_range + 1, src.size());
+    for (size_t i = start; i < end; ++i) {
+      accum += transformPcd(src[i].scan_, src[i].pose_corrected_);
+    }
+  };
+
+  const bool build_submap = (num_submap_keyframes > 1);
+  if (build_submap) {
+    accumulateSubmap(query_keyframes, query_idx, src_accum);
+    accumulateSubmap(match_keyframes, match_idx, tgt_accum);
+  } else {
+    src_accum = transformPcd(query_keyframes[query_idx].scan_,
+                             query_keyframes[query_idx].pose_corrected_);
+    if (config_.enable_global_registration_) {
+      tgt_accum = transformPcd(match_keyframes[match_idx].scan_,
+                               match_keyframes[match_idx].pose_corrected_);
+    } else {
+      accumulateSubmap(match_keyframes, match_idx, tgt_accum);
+    }
+  }
+
+  const double effective_voxel_res =
+      (voxel_res_override > 0.0) ? voxel_res_override : config_.voxel_res_;
+  const pcl::PointCloud<PointType> src_voxelized = *voxelize(src_accum, effective_voxel_res);
+  const pcl::PointCloud<PointType> tgt_voxelized = *voxelize(tgt_accum, effective_voxel_res);
+
+  *src_cloud_ = src_voxelized;
+  *tgt_cloud_ = tgt_voxelized;
+
+  if (config_.enable_global_registration_) {
+    RCLCPP_INFO(logger_,
+                "\033[1;36mInter-session coarse-to-fine: # src = %lu, # tgt = %lu\033[0m",
+                src_voxelized.size(),
+                tgt_voxelized.size());
+    return coarseToFineAlignment(src_voxelized, tgt_voxelized,
+                                 num_inliers_threshold_override);
+  } else {
+    RCLCPP_INFO(logger_,
+                "\033[1;36mInter-session GICP: # src = %lu, # tgt = %lu\033[0m",
+                src_voxelized.size(),
+                tgt_voxelized.size());
+    return icpAlignment(src_voxelized, tgt_voxelized);
+  }
 }
 
 pcl::PointCloud<PointType> LoopClosure::getSourceCloud() { return *src_cloud_; }

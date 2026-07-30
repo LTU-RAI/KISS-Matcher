@@ -15,6 +15,7 @@
 #include <queue>
 #include <string>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -52,6 +53,8 @@
 #include <gtsam/nonlinear/Values.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
+#include <gtsam/slam/dataset.h>
+#include <gtsam/inference/Symbol.h>
 
 #include "../tictoc.hpp"
 #include "slam/loop_closure.h"
@@ -83,6 +86,13 @@ class PoseGraphManager : public rclcpp::Node {
   void buildMap();
   void detectLoopClosureByLoopDetector();
   void detectLoopClosureByNNSearch();
+  void detectInterSessionLoopClosure();
+  void performInterSessionRegistration();
+  // Commits the pending bootstrap reloc result (if any) as a single
+  // cross-prefix BetweenFactor linking the just-appended new-session keyframe
+  // to the prior-session keyframe used during bootstrap. Clears the pending
+  // flag so only one anchor is added per session.
+  void commitBootstrapAnchor(size_t new_session_kf_idx);
 
   void visualizeCurrentData(const Eigen::Matrix4d &current_odom,
                             const rclcpp::Time &timestamp,
@@ -110,6 +120,13 @@ class PoseGraphManager : public rclcpp::Node {
   // scans are still being accumulated or if the current attempt failed — in
   // either case the caller should skip the rest of the tick.
   bool tryRelocalize();
+
+  // Load a previously-saved session (scans/ + poses_tum.txt + graph.g2o) from
+  // `prior_session_dir_`, populate `prior_keyframes_`, re-key the loaded graph
+  // with `prior_session_prefix_`, and seed ISAM2 with the prior session so
+  // inter-session BetweenFactors can attach to real nodes. Must be called once
+  // in the constructor after `isam_handler_` is constructed.
+  bool loadPriorSession();
 
   std::string map_frame_;
   std::string odom_frame_;
@@ -143,6 +160,11 @@ class PoseGraphManager : public rclcpp::Node {
 
   std::shared_ptr<gtsam::ISAM2> isam_handler_ = nullptr;
   gtsam::NonlinearFactorGraph gtsam_graph_;
+  // Mirror of every factor ever added to `gtsam_graph_`. `gtsam_graph_` is
+  // cleared after each ISAM2 update, so it cannot be used to serialize the
+  // complete pose graph. `persistent_graph_` is appended to at every add site
+  // and never cleared, so `writeG2o` can dump the full session on save.
+  gtsam::NonlinearFactorGraph persistent_graph_;
   gtsam::Values init_esti_;
   gtsam::Values corrected_esti_;
 
@@ -152,12 +174,24 @@ class PoseGraphManager : public rclcpp::Node {
   double save_voxel_res_;
   double loop_pub_delayed_time_;
   double loop_detection_radius_;  // Only for visualization
+  // Number of keyframes per submap. Used for both intra-session LC and the
+  // bootstrap reloc submap-to-submap match.
+  size_t num_submap_keyframes_ = 1;
   int sub_key_num_;
 
   size_t succeeded_query_idx_;
   std::vector<std::pair<size_t, size_t>> vis_loop_edges_;
+  // Inter-session LC edges: first = new-session query idx, second = prior idx
+  std::vector<std::pair<size_t, size_t>> vis_inter_loop_edges_;
   // pose_graph_tools_msgs::msg::PoseGraph loop_msgs_;
   std::queue<LoopIdxPair> loop_idx_pair_queue_;
+  // Inter-session queue: (new-session query idx, prior-session match idx)
+  std::queue<std::pair<size_t, size_t>> inter_loop_idx_pair_queue_;
+  // Dedup set of (query_idx, match_idx) pairs already enqueued for
+  // inter-session registration. Prevents the same pair from being pushed more
+  // than once and lets the worker quiesce once all candidates for each
+  // keyframe have been processed.
+  std::unordered_set<uint64_t> enqueued_inter_pairs_;
 
   kiss_matcher::TicToc timer_;
 
@@ -172,21 +206,62 @@ class PoseGraphManager : public rclcpp::Node {
   bool save_map_bag_         = false;
   bool save_map_pcd_         = false;
   bool save_in_kitti_format_ = false;
+  bool save_pose_graph_      = false;
   double last_lc_time_       = 0.0;
 
+  // Multi-session GTSAM symbol prefixes. When no prior session is loaded,
+  // only `new_session_prefix_` is used and behavior matches a plain-integer
+  // key space (Symbol just wraps the same index with a prefix tag).
+  char prior_session_prefix_ = 'a';
+  char new_session_prefix_   = 'b';
+
+  // Prior session state (loaded once at startup when prior_session_dir is set).
+  std::string prior_session_dir_;
+  std::vector<kiss_matcher::PoseGraphNode> prior_keyframes_;
+
   // Relocalization state
-  bool reloc_enabled_             = false;
-  bool reloc_succeeded_           = false;
+  bool reloc_enabled_                = false;
+  bool reloc_succeeded_              = false;
   std::string prior_map_pcd_path_;
-  size_t reloc_num_submap_scans_  = 5;
-  size_t reloc_num_accumulated_   = 0;
-  double reloc_voxel_res_         = 0.5;
-  double reloc_submap_scan_dist_  = 0.5;
+  // Bootstrap reloc parameters. The bootstrap module collects
+  // `num_submap_keyframes_` scans on the new-session side and matches them
+  // against the first `num_submap_keyframes_` keyframes of the prior session
+  // (submap-to-submap). On failure the ring buffer slides by one and we try
+  // again. No radius / multi-candidate search — we assume we start near the
+  // prior session's start pose.
+  double bootstrap_scan_distance_    = 0.5;
+  // Pre-voxelize resolution used for BOTH submaps during bootstrap reloc only.
+  // <= 0 means "fall back to the global voxel_resolution". Useful when the
+  // steady-state voxel size is too coarse (few FPFH features) to recover an
+  // initial alignment between sessions.
+  double bootstrap_voxel_resolution_ = -1.0;
+  // Minimum KISS-Matcher inliers required to accept the bootstrap match.
+  // < 0 means "fall back to global_reg.num_inliers_threshold". Typically set
+  // lower than the global value when initial alignment is hard.
+  int bootstrap_num_inliers_threshold_ = -1;
+  // Known offset from new-odom frame to prior-map frame. Pre-applied to the
+  // query pose before registration so KISS-Matcher only has to solve the
+  // residual misalignment. Final T_priormap_from_newodom_ is
+  // reg.pose_ * bootstrap_T_init_. Identity = no prior knowledge.
+  Eigen::Matrix4d bootstrap_T_init_ = Eigen::Matrix4d::Identity();
   Eigen::Matrix4d reloc_last_accum_pose_ = Eigen::Matrix4d::Identity();
   bool reloc_has_last_accum_pose_        = false;
+  // Ring buffer of recent new-session scans (already transformed poses in
+  // new-odom frame) used as the query-side submap during bootstrap so we
+  // match submap-to-submap against the first num_submap_keyframes_ prior
+  // keyframes.
+  std::deque<kiss_matcher::PoseGraphNode> reloc_scan_buffer_;
+  // Loaded from `relocalization.prior_map_pcd` solely for publishing on
+  // /prior_map. Actual bootstrap alignment now matches against prior_keyframes_.
   pcl::PointCloud<PointType>::Ptr prior_map_cloud_;
-  pcl::PointCloud<PointType> reloc_submap_accum_;
   Eigen::Matrix4d T_priormap_from_newodom_ = Eigen::Matrix4d::Identity();
+
+  // Deferred anchor: on bootstrap success `tryRelocalize()` stashes the match
+  // target here; the next keyframe added by `callbackNode()` commits a single
+  // cross-prefix BetweenFactor so ISAM2 starts jointly optimizing the prior
+  // and new sessions.
+  bool pending_bootstrap_anchor_   = false;
+  size_t pending_bootstrap_match_idx_ = 0;
 
   std::shared_ptr<kiss_matcher::LoopClosure> loop_closure_;
 
@@ -199,6 +274,7 @@ class PoseGraphManager : public rclcpp::Node {
   // ROS2 interface
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr corrected_path_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr prior_path_pub_;
 
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr scan_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub_;
@@ -228,6 +304,7 @@ class PoseGraphManager : public rclcpp::Node {
   rclcpp::TimerBase::SharedPtr loop_nnsearch_timer_;
   rclcpp::TimerBase::SharedPtr graph_vis_timer_;
   rclcpp::TimerBase::SharedPtr lc_reg_timer_;
+  rclcpp::TimerBase::SharedPtr inter_lc_reg_timer_;
   rclcpp::TimerBase::SharedPtr lc_vis_timer_;
   rclcpp::TimerBase::SharedPtr tf_broadcast_timer_;
   rclcpp::CallbackGroup::SharedPtr tf_broadcast_cb_group_;

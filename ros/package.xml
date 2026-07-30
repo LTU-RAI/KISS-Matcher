@@ -10,6 +10,8 @@
 
   <depend>rcutils</depend>
   <depend>rclcpp</depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
   <depend>rclcpp_components</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>

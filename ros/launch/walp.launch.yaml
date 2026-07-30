@@ -2,18 +2,18 @@
 launch:
   # In arg, all the default value should be string
   - arg: {name: start_rviz,  default: "false"}
-  - arg: {name: namespace,  default: "km_sam", description: KISS-Matcher-SAM (KM-SAM)}
+  - arg: {name: namespace,  default: "walp/km_sam", description: KISS-Matcher-SAM (KM-SAM)}
   - arg: {name: use_sim_time, default: "true", description: "Set true when replaying a bag so TF stamps share the sim clock with Fast-LIO"}
 
   - arg: {name: rviz_path,  default: $(find-pkg-share kiss_matcher_ros)/rviz/kiss_matcher_sam.rviz}
-  - arg: {name: config_path,   default: $(find-pkg-share kiss_matcher_ros)/config/campus_spring_slam.yaml}
+  - arg: {name: config_path,   default: $(find-pkg-share kiss_matcher_ros)/config/walp.yaml}
 
   - arg: {name: map_frame , default: 'map' , description: "Global (loop-closure corrected) frame"}
-  - arg: {name: odom_frame, default: 'dcp2/odom', description: "Fast-LIO odometry frame (child of map)"}
-  - arg: {name: base_frame, default: 'dcp2/os_sensor', description: "Robot's base frame (kept for compatibility)"}
+  - arg: {name: odom_frame, default: 'walp/odom', description: "Fast-LIO odometry frame (child of map)"}
+  - arg: {name: base_frame, default: 'walp/base_link', description: "Robot's base frame (kept for compatibility)"}
 
-  - arg: {name: odom_topic, default: "/dcp2/odometry/imu"}
-  - arg: {name: scan_topic, default: "/dcp2/ouster/points"}
+  - arg: {name: odom_topic, default: "/walp/fast_lio/odometry"}
+  - arg: {name: scan_topic, default: "/walp/fast_lio/cloud_registered"}
 
   - node:
       namespace: $(var namespace)

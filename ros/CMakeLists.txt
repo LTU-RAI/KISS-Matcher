@@ -142,6 +142,11 @@ install(TARGETS
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
+install(PROGRAMS
+  scripts/run_kiss_matcher_node.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(DIRECTORY launch config rviz
   DESTINATION share/${PROJECT_NAME}
 )

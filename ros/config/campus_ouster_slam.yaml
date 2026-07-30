@@ -19,17 +19,17 @@
     scan_in_sensor_frame: false      # Set true when the scan topic is in the sensor/lidar frame
                                      # (e.g. raw driver output). Default false assumes the scan is
                                      # already in the odom frame (e.g. fast_lio/cloud_registered).
-    voxel_resolution: 0.5            # ⭐ [Unit: m] Voxel grid resolution for downsampling
+    voxel_resolution: 0.5 #0.2            # ⭐ [Unit: m] Voxel grid resolution for downsampling
     map_voxel_resolution: 1.0        # Resolution used when building map. Only for visualization
     save_voxel_resolution: 0.4       # Resolution used when saving voxelized map
 
     keyframe:
-      keyframe_threshold: 0.5 #0.5        # ⭐ [Unit: m] Distance threshold to add a new keyframe
+      keyframe_threshold: 0.5        # ⭐ [Unit: m] Distance threshold to add a new keyframe
       # NOTE(hlim): Once `num_submap_keyframes` is larger than 1,
       # Submap-to-submap registration is performed.
       # The main advantage of KISS-Matcher is its super-fast speed in submap matching!
       # see: https://arxiv.org/pdf/2409.15615
-      num_submap_keyframes: 21        # ⭐ > 0. Number of keyframes per submap. It should be an odd number
+      num_submap_keyframes: 21 # 10        # ⭐ > 0. Number of keyframes per submap. It should be an odd number
 
     loop:
       verbose: true                  # Enable verbose output
@@ -43,7 +43,7 @@
 
     local_reg:
       num_threads: 8                  # Number of threads used for local registration
-      correspondences_number: 16      # Minimum number of correspondences required
+      correspondences_number: 16 # 20      # Minimum number of correspondences required
       max_num_iter: 32                # Maximum iterations for local registration
       # NOTE(hlim): `scale_factor_for_corr_dist` * `voxel_resolution` is set to
       # distance threshold for ICP-variants (i.e., it is a factor relative to voxel resolution)
@@ -51,7 +51,7 @@
       # NOTE(hlim): The best value of `overlap_threshold` highly depends on `num_submap_keyframes`
       # Thus, heuristic tuning is required for the best performance.
       # Larger values make it more conservative (i.e., higher `overlap_threshold` enhances LC precision)
-      overlap_threshold: 40.0 # 55.0         # ⭐ [Unit: %] Threshold for the ratio of ICP inliers
+      overlap_threshold: 40.0 #55.0         # ⭐ [Unit: %] Threshold for the ratio of ICP inliers
                                       # (i.e., the percentage of correspondences within `corr_dist`).
                                       # A value close to 100% means the source and target are nearly perfectly aligned.
                                       # In cases of partial overlap, this ratio can never reach 100%.
@@ -62,53 +62,54 @@
       # NOTE(hlim): The best value of `num_inliers_threshold` highly depends on `num_submap_keyframes`
       # Thus, heuristic tuning is required for the best performance.
       # Larger values make it more conservative (i.e., higher `num_inliers_threshold` enhances LC precision)
-      num_inliers_threshold: 40 # 50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
+      num_inliers_threshold: 40       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
     relocalization:
-      enabled: false                    # If true, bootstrap into a previously saved session at startup
-      prior_map_pcd: "/home/niksta/Documents/datasets/campus_ouster/campus_ouster_map.pcd"  # Visualization only (published on /prior_map). Leave empty to skip.
-      # Prior session dir is required when reloc is enabled. The directory must
-      # contain scans/NNNNNN.pcd, poses_tum.txt, and graph.g2o (as produced by
-      # result.save_pose_graph). Prior keyframes become real nodes in the ISAM2
-      # graph; the bootstrap step below runs a submap-to-submap match against
-      # the prior session's starting region to place new-session odometry into
-      # the prior frame.
-      prior_session_dir: "/home/niksta/Documents/datasets/campus_ouster"
-      prior_session_prefix: "a"         # Single-char GTSAM symbol prefix for prior-session keys
-      new_session_prefix: "b"           # Single-char GTSAM symbol prefix for this run's keys
-      # --- Submap-to-submap bootstrap reloc. Assumes the new session starts
-      # near the prior session's start pose. We collect `num_submap_keyframes`
-      # scans into a ring buffer on the new-session side and match them against
-      # the first `num_submap_keyframes` prior-session keyframes (KISS-Matcher
-      # + VGICP). On failure, the ring slides by one and we retry.
-      bootstrap_scan_distance: 0.5        # [Unit: m] Throttle: push a new scan into the query buffer
-                                          # only after this much motion.
-      bootstrap_voxel_resolution: 0.5     # [Unit: m] Pre-voxelize resolution applied to BOTH
-                                          # src and tgt submaps during bootstrap reloc only.
-                                          # Set <= 0 to reuse the global `voxel_resolution`.
-                                          # Use a smaller value than the global setting to give
-                                          # KISS-Matcher more FPFH features when the initial
-                                          # alignment is failing with too few inliers.
-      bootstrap_num_inliers_threshold: 16 # Minimum KISS-Matcher inliers required to accept a
-                                          # bootstrap candidate. < 0 reuses `global_reg.num_inliers_threshold`.
-                                          # Typically lower than the steady-state value since the
-                                          # initial cross-session alignment is harder to find.
-      # Known 4x4 transform (row-major) from the new-odom frame to the prior-map
-      # frame. Pre-applied to the query pose before candidate search so
-      # KISS-Matcher only has to solve the residual misalignment. Use this when
-      # the new-session odometry is known to start with a bias (e.g. a faulty
-      # bag with a 30 m Z offset). Default is identity (no prior knowledge).
-      # Example below zeroes a 30 m Z offset in the new-odom frame:
-      bootstrap_T_init: [1.0, 0.0, 0.0, 0.0,
-                        0.0, 1.0, 0.0,  0.0,
-                        0.0, 0.0, 1.0,  0.0,
-                        0.0, 0.0, 0.0,  1.0]
+          enabled: false                    # If true, bootstrap into a previously saved session at startup
+          prior_map_pcd: "/home/niksta/Documents/datasets/campus_robinw/campus_robinw_map.pcd"  # Visualization only (published on /prior_map). Leave empty to skip.
+          # Prior session dir is required when reloc is enabled. The directory must
+          # contain scans/NNNNNN.pcd, poses_tum.txt, and graph.g2o (as produced by
+          # result.save_pose_graph). Prior keyframes become real nodes in the ISAM2
+          # graph; the bootstrap step below runs a submap-to-submap match against
+          # the prior session's starting region to place new-session odometry into
+          # the prior frame.
+          prior_session_dir: "/home/niksta/Documents/datasets/campus_robinw"
+          prior_session_prefix: "a"         # Single-char GTSAM symbol prefix for prior-session keys
+          new_session_prefix: "b"           # Single-char GTSAM symbol prefix for this run's keys
+          # --- Submap-to-submap bootstrap reloc. Assumes the new session starts
+          # near the prior session's start pose. We collect `num_submap_keyframes`
+          # scans into a ring buffer on the new-session side and match them against
+          # the first `num_submap_keyframes` prior-session keyframes (KISS-Matcher
+          # + VGICP). On failure, the ring slides by one and we retry.
+          bootstrap_scan_distance: 0.5        # [Unit: m] Throttle: push a new scan into the query buffer
+                                              # only after this much motion.
+          bootstrap_voxel_resolution: 0.5     # [Unit: m] Pre-voxelize resolution applied to BOTH
+                                              # src and tgt submaps during bootstrap reloc only.
+                                              # Set <= 0 to reuse the global `voxel_resolution`.
+                                              # Use a smaller value than the global setting to give
+                                              # KISS-Matcher more FPFH features when the initial
+                                              # alignment is failing with too few inliers.
+          bootstrap_num_inliers_threshold: 16 # Minimum KISS-Matcher inliers required to accept a
+                                              # bootstrap candidate. < 0 reuses `global_reg.num_inliers_threshold`.
+                                              # Typically lower than the steady-state value since the
+                                              # initial cross-session alignment is harder to find.
+          # Known 4x4 transform (row-major) from the new-odom frame to the prior-map
+          # frame. Pre-applied to the query pose before candidate search so
+          # KISS-Matcher only has to solve the residual misalignment. Use this when
+          # the new-session odometry is known to start with a bias (e.g. a faulty
+          # bag with a 30 m Z offset). Default is identity (no prior knowledge).
+          # Example below zeroes a 30 m Z offset in the new-odom frame:
+          bootstrap_T_init: [1.0, 0.0, 0.0, 0.0,
+                            0.0, 1.0, 0.0,  0.0,
+                            0.0, 0.0, 1.0,  0.0,
+                            0.0, 0.0, 0.0,  1.0]
+        
     result:
       save_map_pcd: true
       save_map_bag: false                 # not implemented yet
       save_in_kitti_format: true          # ros2 topic pub -1 /km_sam/save_dir std_msgs/String "data: ''"      
       save_pose_graph: true               # If true, dump graph.g2o alongside scans+poses (for inter-session LC)
-      seq_name: "campus_robinw"
+      seq_name: "campus_ouster"
       save_dir: "/home/niksta/Documents/datasets"                          # Absolute directory for saved results.
                                           # If empty, falls back to the process's current working directory.
                                           # Used by the shutdown save path and as the default for the
