@@ -66,7 +66,7 @@
       save_map_bag: false                 # not implemented yet
       save_in_kitti_format: true
       seq_name: "unitree_lab"
-      save_dir: "/home/niksta/ros2_ws/src/KISS-Matcher/ros/data/unitree_lab/"                        # Absolute directory for saved results.
+      save_dir: "/home/renam/maps"                        # Absolute directory for saved results.
                                           # If empty, falls back to the process's current working directory.
                                           # Used by the shutdown save path and as the default for the
                                           # `save_dir` topic trigger.
