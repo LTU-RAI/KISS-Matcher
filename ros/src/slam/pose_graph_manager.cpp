@@ -117,6 +117,7 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
                     prior_map_pcd_path_.c_str());
         prior_map_cloud_ = nullptr;
       } else {
+        removeInvalidPoints(*prior_map_cloud_);
         const auto &voxelized = voxelize(prior_map_cloud_, map_voxel_res_);
         *prior_map_cloud_     = *voxelized;
         RCLCPP_INFO(this->get_logger(),
@@ -1402,6 +1403,7 @@ bool PoseGraphManager::loadPriorSession() {
                   scan_path.c_str(), i);
       continue;
     }
+    removeInvalidPoints(node.scan_);
     node.pose_                   = tum_poses[i].second;
     node.pose_corrected_         = tum_poses[i].second;
     node.timestamp_              = tum_poses[i].first;

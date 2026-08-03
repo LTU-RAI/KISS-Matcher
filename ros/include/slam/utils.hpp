@@ -21,6 +21,7 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <pcl/common/transforms.h>
+#include <pcl/filters/filter.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -34,6 +35,25 @@
 using PointType = pcl::PointXYZI;
 
 namespace kiss_matcher {
+// NOTE(hlim): `pcl::fromROSMsg`/`pcl::io::loadPCDFile` merely copy the source's
+// `is_dense` flag instead of verifying it, and both `pcl::VoxelGrid` and
+// `pcl::removeNaNFromPointCloud` itself skip the per-point finite check and
+// just blind-copy whenever `is_dense` is (already) true. So if an upstream
+// driver mislabels a cloud containing NaN/Inf as dense, calling
+// `removeNaNFromPointCloud` on it is a no-op: it never scans the data. Force
+// `is_dense = false` first so the scan actually happens. Downstream,
+// `pcl::VoxelGrid` computes voxel indices straight from NaN when `is_dense`
+// is wrongly true; `static_cast<int>` of a NaN is undefined behavior that
+// differs by platform (e.g., x86 SSE vs. ARM NEON float-to-int casts),
+// producing scattered garbage points in the resulting map. Always call this
+// right after any scan/PCD ingestion.
+template <typename T>
+inline void removeInvalidPoints(pcl::PointCloud<T> &cloud) {
+  cloud.is_dense = false;
+  std::vector<int> valid_indices;
+  pcl::removeNaNFromPointCloud(cloud, cloud, valid_indices);
+}
+
 inline void matrixEigenToTF2(const Eigen::Matrix3d &in, tf2::Matrix3x3 &out) {
   out.setValue(
       in(0, 0), in(0, 1), in(0, 2), in(1, 0), in(1, 1), in(1, 2), in(2, 0), in(2, 1), in(2, 2));

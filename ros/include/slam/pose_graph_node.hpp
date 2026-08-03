@@ -46,6 +46,7 @@ struct PoseGraphNode {
 
     pcl::PointCloud<PointType> scan_tmp;
     pcl::fromROSMsg(scan, scan_tmp);
+    removeInvalidPoints(scan_tmp);
 
     if (store_voxelized_scan) {
       auto voxelized_scan = *voxelize(scan_tmp, voxel_size);
