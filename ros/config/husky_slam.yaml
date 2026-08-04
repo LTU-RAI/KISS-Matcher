@@ -65,7 +65,7 @@
       save_map_pcd: true
       save_map_bag: false                 # not implemented yet
       save_in_kitti_format: true
-      seq_name: "husky_lab"
+      seq_name: "latest"
       save_dir: "/home/husky/maps"                        # Absolute directory for saved results.
                                           # If empty, falls back to the process's current working directory.
                                           # Used by the shutdown save path and as the default for the

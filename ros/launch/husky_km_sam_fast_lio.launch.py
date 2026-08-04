@@ -63,7 +63,7 @@ def generate_launch_description():
     # Absolute topics: namespace does NOT auto-prefix these, so they name the ns explicitly.
     odom_topic_arg = DeclareLaunchArgument(
         'odom_topic',
-        default_value=['/', namespace, '/odometry']
+        default_value=['/', namespace, '/odometry/imu']
     )
 
     scan_topic_arg = DeclareLaunchArgument(
